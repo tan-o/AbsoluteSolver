@@ -59,17 +59,29 @@ pub fn letterbox(src: &Mat, target_width: i32, target_height: i32) -> Result<Pre
 }
 
 pub fn auto_correct_exposure(src: &Mat) -> Result<Mat> {
+    // 【优化】用小尺寸图计算亮度，避免处理全分辨率
+    let mut small_src = Mat::default();
+    let small_size = Size::new(320, 240);
+    imgproc::resize(
+        src,
+        &mut small_src,
+        small_size,
+        0.0,
+        0.0,
+        imgproc::INTER_AREA,
+    )?;
+
     let mut gray = Mat::default();
-    if src.channels() == 3 {
+    if small_src.channels() == 3 {
         imgproc::cvt_color(
-            src,
+            &small_src,
             &mut gray,
             imgproc::COLOR_BGR2GRAY,
             0,
             core::AlgorithmHint::ALGO_HINT_DEFAULT,
         )?;
     } else {
-        src.copy_to(&mut gray)?;
+        small_src.copy_to(&mut gray)?;
     }
 
     let mean_scalar = core::mean(&gray, &core::no_array())?;

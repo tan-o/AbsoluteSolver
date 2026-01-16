@@ -32,17 +32,17 @@ impl FacePipeline {
         let detector_path = "head/FaceDetector/FaceDetector.onnx";
         let landmark_path = "head/FaceLandmarkDetector/FaceLandmarkDetector.onnx";
 
-        // 这里建议也加上 DirectML 支持 (如果你的 preprocess 是为了 GPU 准备的)
-        // 但为了保持代码简洁，这里先保持默认配置，你可以按需添加 ExecutionProvider
         let detector_sess = Session::builder()?
             .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_intra_threads(4)?
+            .with_intra_threads(8)?
+            .with_inter_threads(2)?
             .commit_from_file(detector_path)
             .context("无法加载 FaceDetector")?;
 
         let landmark_sess = Session::builder()?
             .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_intra_threads(4)?
+            .with_intra_threads(8)?
+            .with_inter_threads(2)?
             .commit_from_file(landmark_path)
             .context("无法加载 FaceLandmarkDetector")?;
 

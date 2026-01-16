@@ -9,7 +9,7 @@ window:
 
 # 【新增】性能参数
 performance:
-  active_fps: 30 # 检测到手或脸时的帧率 (建议 24 ~ 60)
+  active_fps: 45 # 检测到手或脸时的帧率 (从30->45获得更好的实时性)
   idle_fps: 2 # 没人时的帧率 (建议 1 ~ 10，越低越省电)
 
 algorithm:

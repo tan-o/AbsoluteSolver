@@ -37,14 +37,16 @@ impl HandPipeline {
         let detector_path = "hand/HandDetector/yolo11-hand-keypoint.onnx";
         let detector_sess = Session::builder()?
             .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_intra_threads(4)?
+            .with_intra_threads(8)?
+            .with_inter_threads(2)?
             .commit_from_file(detector_path)
             .context("无法加载 YOLO Hand Detector")?;
 
         let landmark_path = "hand/HandLandmarkDetector/hand_landmark_sparse_Nx3x224x224.onnx";
         let landmark_sess = Session::builder()?
             .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_intra_threads(4)?
+            .with_intra_threads(8)?
+            .with_inter_threads(2)?
             .commit_from_file(landmark_path)
             .context("无法加载 Hand Landmark Detector")?;
 
