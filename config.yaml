@@ -1,0 +1,27 @@
+camera:
+  index: 0
+  width: 640
+  height: 480
+
+window:
+  title: "Absolute Solver - Rust Core"
+  scale: 0.5
+
+# 【新增】性能参数
+performance:
+  active_fps: 30 # 检测到手或脸时的帧率 (建议 24 ~ 60)
+  idle_fps: 2 # 没人时的帧率 (建议 1 ~ 10，越低越省电)
+
+algorithm:
+  hand:
+    stability: 0.7
+    threshold: 0.8
+    overlap: 0.9 # 手脸重叠屏蔽阈值
+
+  face:
+    stability: 0.8
+    threshold: 0.6
+
+assets:
+  avatar: "pictures/avatar.jpg"
+  scale: 1.2 # 建议 1.2 ~ 1.5，完全覆盖头部

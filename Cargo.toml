@@ -1,0 +1,16 @@
+[package]
+name = "absolute_solver"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ort = { version = "2.0.0-rc.11", features = ["ndarray", "copy-dylibs","directml"] }
+opencv = { version = "0.98.1", default-features = false, features = ["videoio", "imgproc", "highgui","imgcodecs"] }
+# 系统交互
+enigo = "0.6.1"
+ndarray = "0.17.2"
+# 错误处理
+anyhow = "1.0.100"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_yaml = "0.9.34-deprecated"
+rdev = "0.5.3"
