@@ -16,6 +16,10 @@ pub struct Config {
     pub mouse: MouseConfig,
     // 【新增】快捷键配置
     pub shortcuts: ShortcutsConfig,
+    // 【新增】手势配置
+    pub gesture: GestureConfig,
+    // 【新增】调试配置
+    pub debug: DebugConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -79,4 +83,27 @@ pub struct ShortcutsConfig {
     // 使用 Vec<String> 允许用户定义组合键，例如 ["LControl", "LAlt", "R"]
     pub reset_center: Vec<String>,
     pub toggle_mouse: Vec<String>,
+}
+// ==========================================
+// 【新增】手势识别配置
+// ==========================================
+#[derive(Debug, Deserialize, Clone)]
+pub struct GestureConfig {
+    // 捏合检测阈值
+    pub pinch_threshold_on: f32,  // 按下阈值（越小越灵敏）
+    pub pinch_threshold_off: f32, // 松开阈值（需要 > on_threshold）
+    pub pinch_smooth_factor: f32, // 捏合平滑因子 (0.0-1.0，越小越平滑)
+
+    // 旋转检测参数
+    pub rotation_slope_threshold: f32, // 斜率阈值（判断是否为竖直动作）
+    pub rotation_cooldown_ms: u128,    // 旋转冷却时间（毫秒）
+}
+
+// ==========================================
+// 【新增】调试配置
+// ==========================================
+#[derive(Debug, Deserialize, Clone)]
+pub struct DebugConfig {
+    pub show_debug_window: bool,    // 是否显示调试窗口
+    pub window_always_on_top: bool, // 摄像头窗口是否置顶
 }

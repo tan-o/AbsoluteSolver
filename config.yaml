@@ -54,3 +54,50 @@ shortcuts:
   toggle_mouse: ["LControl", "LAlt", "O"]
   # 重置鼠标中心锚点
   reset_center: ["LControl", "LAlt", "R"]
+# ================================================
+# 【新增】手势识别参数
+# ================================================
+gesture:
+  # 捏合检测阈值
+  # pinch_threshold_on: 按下阈值 (0.0 ~ 1.0)
+  #   - 越小越灵敏，越容易检测到捏合
+  #   - 推荐范围：0.20 ~ 0.35
+  #   - 如果反应慢，尝试降低到 0.20
+  pinch_threshold_on: 0.25
+
+  # pinch_threshold_off: 松开阈值 (必须 > pinch_threshold_on)
+  #   - 防止抖动误触，应该显著大于 on 阈值
+  #   - 推荐范围：0.50 ~ 0.70
+  pinch_threshold_off: 0.55
+
+  # pinch_smooth_factor: 捏合平滑因子 (0.0 ~ 1.0)
+  #   - 越小（接近0.0）：反应越快，但可能抖动
+  #   - 越大（接近1.0）：越平滑，但反应延迟
+  #   - 推荐范围：0.20 ~ 0.50
+  #   - 如果1s延迟，试试降低到 0.20
+  pinch_smooth_factor: 0.30
+
+  # 旋转检测参数
+  # rotation_slope_threshold: 斜率阈值 (判断是否为竖直动作)
+  #   - 用于区分上下滚动和左右摆动
+  #   - 推荐范围：0.5 ~ 1.2
+  rotation_slope_threshold: 0.8
+
+  # rotation_cooldown_ms: 旋转冷却时间（毫秒）
+  #   - 两次旋转事件之间的最小间隔
+  #   - 推荐范围：200 ~ 500
+  rotation_cooldown_ms: 300
+
+# ================================================
+# 【新增】调试配置
+# ================================================
+debug:
+  # show_debug_window: 是否显示实时调试窗口
+  #   - true: 显示原始帧 + 检测结果 (CPU占用高)
+  #   - false: 隐藏调试窗口，只显示摄像头视图
+  show_debug_window: true
+
+  # window_always_on_top: 摄像头窗口是否置顶
+  #   - true: 窗口始终在最前面
+  #   - false: 窗口可被其他窗口遮挡
+  window_always_on_top: false

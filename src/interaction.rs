@@ -2,7 +2,7 @@
 // 交互模块 - 整合鼠标控制、手势检测、头部姿态
 // ==========================================
 
-use crate::config::MouseConfig;
+use crate::config::{GestureConfig, MouseConfig};
 use anyhow::Result;
 use enigo::{Axis, Button, Coordinate, Direction, Enigo, Mouse, Settings};
 use rdev::display_size;
@@ -27,14 +27,17 @@ pub struct HandGestureController {
     is_pinched: bool,
     pinch_dist_smooth: f32,
     last_rotation_time: Instant,
+    // 配置参数
+    config: GestureConfig,
 }
 
 impl HandGestureController {
-    pub fn new() -> Self {
+    pub fn new(config: GestureConfig) -> Self {
         Self {
             is_pinched: false,
             pinch_dist_smooth: 1.0,
             last_rotation_time: Instant::now(),
+            config,
         }
     }
 
@@ -72,23 +75,24 @@ impl HandGestureController {
 
         let normalized = raw_dist / palm_scale;
 
-        // 3. 极速滤波
-        self.pinch_dist_smooth = self.pinch_dist_smooth * 0.3 + normalized * 0.7;
+        // 3. 更快的滤波 - 提高响应速度
+        // 根据配置的平滑因子动态调整：0.3 = 快速响应，0.5+ = 平滑
+        let alpha_high = 1.0 - self.config.pinch_smooth_factor; // 新数据权重
+        let alpha_low = self.config.pinch_smooth_factor; // 旧数据权重
+        self.pinch_dist_smooth = self.pinch_dist_smooth * alpha_low + normalized * alpha_high;
 
-        // 4. 状态机
+        // 4. 状态机 - 使用配置的阈值
         let mut event = HandEvent::None;
 
-        // 阈值：按下 0.30，松开 0.60
-        let thres_on = 0.30;
-        let thres_off = 0.60;
-
         if !self.is_pinched {
-            if self.pinch_dist_smooth < thres_on {
+            // 只要一过线，立即触发！支持极速点击
+            if self.pinch_dist_smooth < self.config.pinch_threshold_on {
                 self.is_pinched = true;
                 event = HandEvent::PinchStart;
             }
         } else {
-            if self.pinch_dist_smooth > thres_off {
+            // 松开检测
+            if self.pinch_dist_smooth > self.config.pinch_threshold_off {
                 self.is_pinched = false;
                 event = HandEvent::PinchEnd;
             }
@@ -98,8 +102,8 @@ impl HandGestureController {
             return event;
         }
 
-        // 5. 旋转检测
-        if self.last_rotation_time.elapsed().as_millis() > 300 {
+        // 5. 旋转检测 - 使用配置的冷却时间和角度阈值
+        if self.last_rotation_time.elapsed().as_millis() > self.config.rotation_cooldown_ms {
             let (ix, iy) = p(5);
             let (px, py) = p(17);
 
@@ -108,7 +112,8 @@ impl HandGestureController {
 
             let slope = dy.abs() / (dx.abs() + 0.001);
 
-            if slope > 0.8 {
+            // 使用配置的斜率阈值判断是否为竖直动作
+            if slope > self.config.rotation_slope_threshold {
                 if dy > 0.0 {
                     self.last_rotation_time = Instant::now();
                     return HandEvent::RotateCW;

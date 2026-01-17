@@ -55,7 +55,7 @@ impl SolverApp {
         let mouse_controller = HeadMouseController::new(config.mouse.clone())?;
         let input_manager = InputManager::new(&config.shortcuts)?;
         let pose_solver = HeadPoseSolver::new(config.camera.width, config.camera.height)?;
-        let gesture_controller = HandGestureController::new();
+        let gesture_controller = HandGestureController::new(config.gesture.clone());
         let raw_face_mask = algorithms::load_and_prepare_mask(&config.assets.avatar)?;
 
         Ok(SolverApp {
@@ -79,6 +79,57 @@ impl SolverApp {
         let win_h = (config.camera.height as f64 * config.window.scale) as i32;
         highgui::named_window(&config.window.title, highgui::WINDOW_NORMAL)?;
         highgui::resize_window(&config.window.title, win_w, win_h)?;
+
+        // 【新增】如果配置了置顶，设置窗口置顶
+        if config.debug.window_always_on_top {
+            Self::set_window_always_on_top(&config.window.title)?;
+        }
+
+        Ok(())
+    }
+
+    #[cfg(target_os = "windows")]
+    fn set_window_always_on_top(window_title: &str) -> Result<()> {
+        use std::ffi::OsStr;
+        use std::os::windows::ffi::OsStrExt;
+
+        // 转换标题为 Wide 字符串
+        let wide: Vec<u16> = OsStr::new(window_title)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+
+        unsafe {
+            // 调用 Windows API SetWindowPos 将窗口设为置顶
+            extern "system" {
+                fn FindWindowW(lpclass: *const u16, lpname: *const u16) -> *mut std::ffi::c_void;
+                fn SetWindowPos(
+                    hwnd: *mut std::ffi::c_void,
+                    hwnd_insert_after: *mut std::ffi::c_void,
+                    x: i32,
+                    y: i32,
+                    cx: i32,
+                    cy: i32,
+                    uflags: u32,
+                ) -> i32;
+            }
+
+            const HWND_TOPMOST: *mut std::ffi::c_void = -1isize as *mut std::ffi::c_void;
+            const SWP_NOMOVE: u32 = 0x0002;
+            const SWP_NOSIZE: u32 = 0x0001;
+
+            let hwnd = FindWindowW(std::ptr::null(), wide.as_ptr());
+            if !hwnd.is_null() {
+                SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn set_window_always_on_top(_window_title: &str) -> Result<()> {
+        // 非 Windows 平台不实现置顶功能
+        eprintln!(">> [Warn] 窗口置顶功能仅在 Windows 平台支持");
         Ok(())
     }
 
@@ -374,7 +425,11 @@ impl SolverApp {
                 false,
             )?;
 
-            highgui::imshow(&self.config.window.title, &flipped_frame)?;
+            // 【新增】根据配置决定是否显示调试窗口
+            if self.config.debug.show_debug_window {
+                highgui::imshow(&self.config.window.title, &flipped_frame)?;
+            }
+
             if highgui::wait_key(1)? == 27 {
                 break;
             }
