@@ -151,6 +151,11 @@ impl SolverApp {
         let mut active_cooldown = 0; // 交互冷却帧数
         let overlap_threshold = self.config.algorithm.hand.overlap.unwrap_or(0.5);
 
+        // 【新增】实时FPS计算变量
+        let mut frame_count = 0u32;
+        let mut fps_timer = Instant::now();
+        let mut real_fps = 0.0f32;
+
         loop {
             // 【恢复】计时开始
             let start_time = Instant::now();
@@ -404,9 +409,11 @@ impl SolverApp {
             } else {
                 idle_fps
             };
+
+            // 【修改】显示实时FPS而不是目标FPS
             let status = format!(
-                "FPS: {} | Sys: {}",
-                current_fps,
+                "FPS: {:.1} | Sys: {}",
+                real_fps,
                 if self.mouse_controller.enabled {
                     "ON"
                 } else {
@@ -437,6 +444,15 @@ impl SolverApp {
             // 【恢复】帧率控制逻辑
             if active_cooldown > 0 {
                 active_cooldown -= 1;
+            }
+
+            // 【新增】实时FPS计算
+            frame_count += 1;
+            let elapsed_fps = fps_timer.elapsed();
+            if elapsed_fps.as_millis() >= 1000 {
+                real_fps = frame_count as f32 * 1000.0 / elapsed_fps.as_millis() as f32;
+                frame_count = 0;
+                fps_timer = Instant::now();
             }
 
             let elapsed = start_time.elapsed();

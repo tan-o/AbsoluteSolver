@@ -150,12 +150,13 @@ impl LandmarkSmoother {
     pub fn new(num_landmarks: usize) -> Self {
         let mut filters = Vec::with_capacity(num_landmarks);
         for _ in 0..num_landmarks {
-            // 参数调优: min_cutoff 越小越稳，beta 越大越跟手
-            // 0.01, 100.0 是一个比较平衡的值
+            // 【优化】参数调优以提高响应速度：
+            // min_cutoff: 0.05（更快的响应，原来0.01太慢）
+            // beta: 200.0（增加beta使其更跟手，原来100.0太稳定）
             filters.push([
-                OneEuroFilter::new(0.01, 100.0),
-                OneEuroFilter::new(0.01, 100.0),
-                OneEuroFilter::new(0.01, 100.0),
+                OneEuroFilter::new(0.05, 200.0),
+                OneEuroFilter::new(0.05, 200.0),
+                OneEuroFilter::new(0.05, 200.0),
             ]);
         }
         Self {
