@@ -100,4 +100,4 @@ debug:
   # window_always_on_top: 摄像头窗口是否置顶
   #   - true: 窗口始终在最前面
   #   - false: 窗口可被其他窗口遮挡
-  window_always_on_top: false
+  window_always_on_top: true
