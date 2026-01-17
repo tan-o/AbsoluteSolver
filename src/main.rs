@@ -380,34 +380,53 @@ impl SolverApp {
             if let Some((rect, _)) = self.last_known_face_rect {
                 if self.last_known_face_rect.unwrap().1.elapsed().as_millis() < 500 {
                     if let Some(ref landmarks) = self.last_valid_landmarks {
-                        if let (Some(nose), Some(leye), Some(reye)) =
-                            (landmarks.get(1), landmarks.get(33), landmarks.get(263))
-                        {
-                            let cx_global = (nose[0] + leye[0] + reye[0]) / 3.0;
-                            let cy_global = (nose[1] + leye[1] + reye[1]) / 3.0;
-                            let cx_gui = win_w as f32 - (cx_global * win_scale);
-                            let cy_gui = cy_global * win_scale;
-                            let face_w = rect.width as f32 * win_scale * self.config.assets.scale;
-                            let face_h = rect.height as f32 * win_scale * self.config.assets.scale;
-
-                            if face_w > 0.0 && face_h > 0.0 {
-                                imgproc::resize(
-                                    &self.raw_face_mask,
-                                    &mut current_frame_mask,
-                                    Size::new(face_w as i32, face_h as i32),
-                                    0.0,
-                                    0.0,
-                                    imgproc::INTER_LINEAR,
-                                )?;
-                                let top_left = Point::new(
-                                    cx_gui as i32 - face_w as i32 / 2,
-                                    cy_gui as i32 - face_h as i32 / 2,
-                                );
-                                algorithms::overlay_image(
+                        // 新增逻辑：如果 scale 为 0，绘制 468 个特征点
+                        if self.config.assets.scale <= 0.0 {
+                            for p in landmarks {
+                                let px = win_w as f32 - (p[0] * win_scale);
+                                let py = p[1] * win_scale;
+                                imgproc::circle(
                                     &mut flipped_frame,
-                                    &current_frame_mask,
-                                    top_left,
+                                    Point::new(px as i32, py as i32),
+                                    1,                                   // 特征点半径
+                                    Scalar::new(0.0, 255.0, 255.0, 0.0), // 黄色
+                                    -1,
+                                    8,
+                                    0,
                                 )?;
+                            }
+                        } else {
+                            if let (Some(nose), Some(leye), Some(reye)) =
+                                (landmarks.get(1), landmarks.get(33), landmarks.get(263))
+                            {
+                                let cx_global = (nose[0] + leye[0] + reye[0]) / 3.0;
+                                let cy_global = (nose[1] + leye[1] + reye[1]) / 3.0;
+                                let cx_gui = win_w as f32 - (cx_global * win_scale);
+                                let cy_gui = cy_global * win_scale;
+                                let face_w =
+                                    rect.width as f32 * win_scale * self.config.assets.scale;
+                                let face_h =
+                                    rect.height as f32 * win_scale * self.config.assets.scale;
+
+                                if face_w > 0.0 && face_h > 0.0 {
+                                    imgproc::resize(
+                                        &self.raw_face_mask,
+                                        &mut current_frame_mask,
+                                        Size::new(face_w as i32, face_h as i32),
+                                        0.0,
+                                        0.0,
+                                        imgproc::INTER_LINEAR,
+                                    )?;
+                                    let top_left = Point::new(
+                                        cx_gui as i32 - face_w as i32 / 2,
+                                        cy_gui as i32 - face_h as i32 / 2,
+                                    );
+                                    algorithms::overlay_image(
+                                        &mut flipped_frame,
+                                        &current_frame_mask,
+                                        top_left,
+                                    )?;
+                                }
                             }
                         }
                     }

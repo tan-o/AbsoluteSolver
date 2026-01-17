@@ -96,8 +96,8 @@ pub struct GestureConfig {
     pub pinch_smooth_factor: f32, // 捏合平滑因子 (0.0-1.0，越小越平滑)
 
     // 旋转检测参数
-    pub rotation_slope_threshold: f32, // 斜率阈值（判断是否为竖直动作）
-    pub rotation_cooldown_ms: u128,    // 旋转冷却时间（毫秒）
+    // pub rotation_slope_threshold: f32, // 斜率阈值（判断是否为竖直动作）
+    pub rotation_cooldown_ms: u128, // 旋转冷却时间（毫秒）
 }
 
 // ==========================================

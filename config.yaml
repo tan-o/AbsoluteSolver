@@ -51,7 +51,7 @@ algorithm:
 
 assets:
   avatar: "pictures/avatar.jpg"
-  scale: 1.2 # 建议 1.2 ~ 1.5，完全覆盖头部
+  scale: 0.0 # 建议 1.2 ~ 1.5，完全覆盖头部
 
 mouse:
   enabled: true
@@ -61,13 +61,13 @@ mouse:
 
   # 线性灵敏度: 头动 1 像素 = 鼠标动 X 像素
   # 【优化】增加灵敏度以提高跟随速度
-  sensitivity_x: 25.0
-  sensitivity_y: 30.0 # Y轴通常稍微大一点方便卷动网页
+  sensitivity_x: 20.0
+  sensitivity_y: 25.0 # Y轴通常稍微大一点方便卷动网页
 
   # EMA 平滑系数 (0.01 ~ 1.0)
   # 【优化】增加平滑系数的值以减少延迟，但仍保持稳定
   # 越小越稳，越大越快。0.25 提供更好的实时性。
-  smoothing: 0.25
+  smoothing: 0.20
 
   # 死区 (像素)
   # 小于此数值的头部微颤将被忽略
@@ -93,12 +93,12 @@ gesture:
   #   - 越小越灵敏，越容易检测到捏合
   #   - 推荐范围：0.20 ~ 0.35
   #   - 如果反应慢，尝试降低到 0.20
-  pinch_threshold_on: 0.22
+  pinch_threshold_on: 0.3
 
   # pinch_threshold_off: 松开阈值 (必须 > pinch_threshold_on)
   #   - 防止抖动误触，应该显著大于 on 阈值
   #   - 推荐范围：0.50 ~ 0.70
-  pinch_threshold_off: 0.50
+  pinch_threshold_off: 0.45
 
   # pinch_smooth_factor: 捏合平滑因子 (0.0 ~ 1.0)
   #   - 越小（接近0.0）：反应越快，但可能抖动

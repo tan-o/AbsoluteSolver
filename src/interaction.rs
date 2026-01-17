@@ -27,6 +27,7 @@ pub struct HandGestureController {
     is_pinched: bool,
     pinch_dist_smooth: f32,
     last_rotation_time: Instant,
+    base_angle: Option<f32>, // 【新增】基准角度
     // 配置参数
     config: GestureConfig,
 }
@@ -37,6 +38,7 @@ impl HandGestureController {
             is_pinched: false,
             pinch_dist_smooth: 1.0,
             last_rotation_time: Instant::now(),
+            base_angle: None,
             config,
         }
     }
@@ -69,10 +71,15 @@ impl HandGestureController {
         }
 
         // 2. 计算捏合距离 (Pinch Distance)
-        let (tx, ty) = p(4); // 拇指
-        let (ix, iy) = p(8); // 食指
-        let raw_dist = ((tx - ix).powi(2) + (ty - iy).powi(2)).sqrt();
+        let (tx, ty) = p(4); // 拇指尖
+        let (i_x, i_y) = p(8); // 食指尖
+        let (m_x, m_y) = p(12); // 中指尖
 
+        let dist_index = ((tx - i_x).powi(2) + (ty - i_y).powi(2)).sqrt();
+        let dist_middle = ((tx - m_x).powi(2) + (ty - m_y).powi(2)).sqrt();
+
+        // 取两者中较小的一个，或者平均值，这里建议取平均值以获得更好的稳定性
+        let raw_dist = (dist_index + dist_middle) / 2.0;
         let normalized = raw_dist / palm_scale;
 
         // 3. 更快的滤波 - 提高响应速度
@@ -102,25 +109,34 @@ impl HandGestureController {
             return event;
         }
 
-        // 5. 旋转检测 - 使用配置的冷却时间和角度阈值
+        // 5. 改进的相对旋转检测
+        let (ix, iy) = p(5); // 食指根部
+        let (px, py) = p(17); // 小指根部
+
+        // 计算当前手掌角度 (弧度)
+        let current_angle = (py - iy).atan2(px - ix);
+
+        // 如果是新检测到的手，记录基准角度
+        let base = *self.base_angle.get_or_insert(current_angle);
+
+        // 计算角度差值并归一化到 [-PI, PI]
+        let mut diff = current_angle - base;
+        while diff > std::f32::consts::PI {
+            diff -= 2.0 * std::f32::consts::PI;
+        }
+        while diff < -std::f32::consts::PI {
+            diff += 2.0 * std::f32::consts::PI;
+        }
+
         if self.last_rotation_time.elapsed().as_millis() > self.config.rotation_cooldown_ms {
-            let (ix, iy) = p(5);
-            let (px, py) = p(17);
+            let threshold = 45.0f32.to_radians(); // 设定为 45 度
 
-            let dx: f32 = px - ix;
-            let dy: f32 = py - iy;
-
-            let slope = dy.abs() / (dx.abs() + 0.001);
-
-            // 使用配置的斜率阈值判断是否为竖直动作
-            if slope > self.config.rotation_slope_threshold {
-                if dy > 0.0 {
-                    self.last_rotation_time = Instant::now();
-                    return HandEvent::RotateCW;
-                } else {
-                    self.last_rotation_time = Instant::now();
-                    return HandEvent::RotateCCW;
-                }
+            if diff > threshold {
+                self.last_rotation_time = Instant::now();
+                return HandEvent::RotateCW;
+            } else if diff < -threshold {
+                self.last_rotation_time = Instant::now();
+                return HandEvent::RotateCCW;
             }
         }
 

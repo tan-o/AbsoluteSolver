@@ -45,16 +45,20 @@ impl HandPipeline {
         let detector_path = "hand/HandDetector/yolo11-hand-keypoint.onnx";
         let detector_sess = Session::builder()?
             .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_intra_threads(8)?
-            .with_inter_threads(2)?
+            .with_execution_providers([
+                ort::execution_providers::DirectMLExecutionProvider::default().build(),
+            ])?
+            .with_intra_threads(4)? // 减少线程竞争
             .commit_from_file(detector_path)
             .context("无法加载 YOLO Hand Detector")?;
 
         let landmark_path = "hand/HandLandmarkDetector/hand_landmark_sparse_Nx3x224x224.onnx";
         let landmark_sess = Session::builder()?
             .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_intra_threads(8)?
-            .with_inter_threads(2)?
+            .with_execution_providers([
+                ort::execution_providers::DirectMLExecutionProvider::default().build(),
+            ])?
+            .with_intra_threads(4)? // 减少线程竞争
             .commit_from_file(landmark_path)
             .context("无法加载 Hand Landmark Detector")?;
 
@@ -332,15 +336,19 @@ impl FacePipeline {
 
         let detector_sess = Session::builder()?
             .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_intra_threads(8)?
-            .with_inter_threads(2)?
+            .with_execution_providers([
+                ort::execution_providers::DirectMLExecutionProvider::default().build(),
+            ])?
+            .with_intra_threads(4)? // 减少线程竞争
             .commit_from_file(detector_path)
             .context("无法加载 FaceDetector")?;
 
         let landmark_sess = Session::builder()?
             .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_intra_threads(8)?
-            .with_inter_threads(2)?
+            .with_execution_providers([
+                ort::execution_providers::DirectMLExecutionProvider::default().build(),
+            ])?
+            .with_intra_threads(4)? // 减少线程竞争
             .commit_from_file(landmark_path)
             .context("无法加载 FaceLandmarkDetector")?;
 
@@ -521,7 +529,7 @@ impl FacePipeline {
         let img_h = full_frame.rows() as f32;
 
         // 1.5倍扩充，稍微多看一点背景
-        let scale_roi = 1.0;
+        let scale_roi = 1.5;
         let box_size_px = w_global.max(h_global) * scale_roi;
 
         let x1 = (cx_global - box_size_px / 2.0) as i32;
