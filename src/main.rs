@@ -60,13 +60,22 @@ impl SolverApp {
         println!(">> [Init] 系统初始化中...");
         Self::setup_window(&config)?;
 
-        let mut camera = videoio::VideoCapture::new(config.camera.index, videoio::CAP_ANY)?;
+        // let mut camera = videoio::VideoCapture::new(config.camera.index, videoio::CAP_ANY)?;
+        // 【修改后】指定使用 DirectShow (Windows)
+        #[cfg(target_os = "windows")]
+        let api_preference = videoio::CAP_MSMF;
+
+        #[cfg(not(target_os = "windows"))]
+        let api_preference = videoio::CAP_ANY;
+
+        let mut camera = videoio::VideoCapture::new(config.camera.index, api_preference)?;
+
         if !videoio::VideoCapture::is_opened(&camera)? {
             anyhow::bail!("无法打开摄像头 ID: {}", config.camera.index);
         }
         camera.set(videoio::CAP_PROP_FRAME_WIDTH, config.camera.width as f64)?;
         camera.set(videoio::CAP_PROP_FRAME_HEIGHT, config.camera.height as f64)?;
-        camera.set(videoio::CAP_PROP_FPS, 60.0)?;
+        camera.set(videoio::CAP_PROP_FPS, 30.0)?;
 
         let hand_pipeline = HandPipeline::new(config.algorithm.hand.clone())?;
         let face_pipeline = FacePipeline::new(config.algorithm.face.clone())?;

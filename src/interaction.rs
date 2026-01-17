@@ -23,12 +23,8 @@ pub enum HandEvent {
 // ==========================================
 // 手势检测控制器
 // ==========================================
-// ==========================================
-// 手势检测控制器
-// ==========================================
 pub struct HandGestureController {
     is_pinched: bool,
-    pinch_dist_smooth: f32,
     last_rotation_time: Instant,
     base_angle: Option<f32>, // 基准角度
     config: GestureConfig,
@@ -38,22 +34,16 @@ impl HandGestureController {
     pub fn new(config: GestureConfig) -> Self {
         Self {
             is_pinched: false,
-            pinch_dist_smooth: 1.0,
             last_rotation_time: Instant::now(),
             base_angle: None,
             config,
         }
     }
 
-    /// 【新增】强制重置状态，供外部（main.rs）在检测不到手时调用
+    /// 强制重置状态，供外部（main.rs）在检测不到手时调用
     pub fn reset_state(&mut self) {
-        if self.base_angle.is_some() {
-            // 只有当有状态时才打印，避免刷屏
-            // println!(">> [Gesture] Hand lost, resetting rotation base.");
-        }
         self.base_angle = None;
         self.is_pinched = false;
-        self.pinch_dist_smooth = 1.0; // 重置捏合平滑值，防止下次出现时误触
     }
 
     pub fn is_pinched(&self) -> bool {
@@ -70,63 +60,86 @@ impl HandGestureController {
         // 辅助函数
         let p = |i: usize| -> (f32, f32) { (landmarks[i][0], landmarks[i][1]) };
 
-        // 2. 计算手掌尺度
-        let (wx, wy) = p(0);
-        let roots = [5, 9, 13, 17];
-        let mut sum_dist = 0.0f32;
-        for &r in &roots {
-            let (rx, ry) = p(r);
-            sum_dist += ((rx - wx).powi(2) + (ry - wy).powi(2)).sqrt();
-        }
-        let palm_scale = sum_dist / 4.0;
+        // ============================================================
+        // 【新算法】基于多指质心的几何捏合检测
+        // ============================================================
 
-        if palm_scale < 0.001 {
+        // 1. 计算参考尺度：手腕(0) 到 小指根部(17) 的距离
+        // 这个距离比 0-9 更稳定，因为动手指时 17 号点位移较小
+        let (wx, wy) = p(0);
+        let (px, py) = p(17);
+        let scale_ref = ((wx - px).powi(2) + (wy - py).powi(2)).sqrt();
+
+        // 防止除以0或手太远
+        if scale_ref < 1.0 {
             self.reset_state();
             return HandEvent::None;
         }
 
+        // 2. 计算 12 个手指关键点的“质心” (Centroid)
+        // 包含：食指(6,7,8), 中指(10,11,12), 无名指(14,15,16), 小指(18,19,20)
+        let fingers_indices = [
+            6, 7, 8, // Index
+            10, 11, 12, // Middle
+            14, 15, 16, // Ring
+            18, 19, 20, // Pinky
+        ];
+
+        let mut sum_x = 0.0;
+        let mut sum_y = 0.0;
+        for &idx in &fingers_indices {
+            let (x, y) = p(idx);
+            sum_x += x;
+            sum_y += y;
+        }
+
+        let center_x = sum_x / 12.0;
+        let center_y = sum_y / 12.0;
+
+        // 3. 计算 拇指尖(4) 到 这个质心 的距离
+        let (thumb_x, thumb_y) = p(4);
+        let dist_thumb_to_center =
+            ((thumb_x - center_x).powi(2) + (thumb_y - center_y).powi(2)).sqrt();
+
+        // 4. 计算归一化比例 (无量纲)
+        let ratio = dist_thumb_to_center / scale_ref;
+
         // ============================================================
-        // 捏合检测 (Pinch)
+        // 状态机判定 (无平滑，直接比较)
         // ============================================================
-        let (tx, ty) = p(4);
-        let (i_x, i_y) = p(8);
-        let (m_x, m_y) = p(12);
-
-        let dist_index = ((tx - i_x).powi(2) + (ty - i_y).powi(2)).sqrt();
-        let dist_middle = ((tx - m_x).powi(2) + (ty - m_y).powi(2)).sqrt();
-        let raw_dist = (dist_index + dist_middle) / 2.0;
-        let normalized = raw_dist / palm_scale;
-
-        let alpha_high = 1.0 - self.config.pinch_smooth_factor;
-        let alpha_low = self.config.pinch_smooth_factor;
-        self.pinch_dist_smooth = self.pinch_dist_smooth * alpha_low + normalized * alpha_high;
-
         let mut event = HandEvent::None;
 
         if !self.is_pinched {
-            if self.pinch_dist_smooth < self.config.pinch_threshold_on {
+            // 还没有捏合 -> 检测是否捏合
+            // 建议：由于计算方式变了，ratio 的值可能和以前不一样
+            // 你可能需要在 config.yaml 里微调 pinch_threshold_on
+            if ratio < self.config.pinch_threshold_on {
                 self.is_pinched = true;
                 event = HandEvent::PinchStart;
             }
         } else {
-            if self.pinch_dist_smooth > self.config.pinch_threshold_off {
+            // 已经捏合 -> 检测是否松开
+            // 使用 hysteresis (迟滞) 防止临界值抖动：松开阈值必须大于捏合阈值
+            if ratio > self.config.pinch_threshold_off {
                 self.is_pinched = false;
                 event = HandEvent::PinchEnd;
             }
         }
 
-        if self.is_pinched {
+        // 如果触发了捏合事件，直接返回，不处理旋转
+        if event != HandEvent::None {
             return event;
         }
 
-        // ============================================================
-        // 旋转检测 (Rotation) - 使用 0, 9, 10, 11, 12 向量平均法
-        // ============================================================
+        // 如果处于捏合状态，也不处理旋转（防止拖拽时误触滚动）
+        if self.is_pinched {
+            return HandEvent::None;
+        }
 
+        // ============================================================
+        // 旋转检测 (Rotation) - 保持之前的逻辑
+        // ============================================================
         let (wrist_x, wrist_y) = p(0);
-
-        // 计算中指 4 个关键点相对于手腕的向量和
-        // 这种方法比线性回归更适合这种短线段，且计算极快
         let finger_indices = [9, 10, 11, 12];
         let mut sum_dx = 0.0;
         let mut sum_dy = 0.0;
@@ -137,13 +150,9 @@ impl HandGestureController {
             sum_dy += py - wrist_y;
         }
 
-        // 计算合成角度
         let current_angle = sum_dy.atan2(sum_dx);
-
-        // 【关键】如果是新出现的手（base_angle 为 None），立即锁定当前角度为基准
         let base = *self.base_angle.get_or_insert(current_angle);
 
-        // 计算差值
         let mut diff = current_angle - base;
         while diff > std::f32::consts::PI {
             diff -= 2.0 * std::f32::consts::PI;
@@ -164,12 +173,12 @@ impl HandGestureController {
             }
         }
 
-        event
+        HandEvent::None
     }
 }
 
 // ==========================================
-// 头部姿态求解器
+// 头部姿态求解器 (保持不变)
 // ==========================================
 pub struct HeadPoseSolver;
 
@@ -178,34 +187,29 @@ impl HeadPoseSolver {
         Ok(Self)
     }
 
-    /// 获取实际使用的刚性特征点索引
     pub fn get_rigid_landmark_indices() -> &'static [usize] {
         const RIGID_INDICES: &[usize] = &[
-            // === 1. 中轴线 (从发际线到鼻尖) ===
-            10, 151, 9, 8, 168, 6, 197, 195, 5, 4, 1,
-            // === 2. 整个额头区域 (高密度网格) ===
-            // 左额头
-            109, 67, 103, 54, 21, 162, 127, 234, 93, // 右额头
-            338, 297, 332, 284, 251, 389, 356, 454, 323,
-            // === 3. 眉骨 (眉毛下方的骨头) ===
-            // 左眉
-            46, 53, 52, 65, 55, 70, 63, 105, 66, 107, // 右眉
-            276, 283, 282, 295, 285, 336, 296, 334, 293, 300,
-            // === 4. 眼眶骨 (红框下边缘划过的地方) ===
-            // 左眼眶下沿 (避开会动的眼皮)
-            117, 118, 119, 120, 121, 47, // 右眼眶下沿
-            346, 347, 348, 349, 350, 277,
-            // === 5. 鼻梁两侧与脸颊连接处 ===
-            // 左侧
-            123, 50, 114, 192, // 右侧
-            352, 280, 343, 416,
+            1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 19, 20, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 33, 35,
+            44, 45, 47, 48, 49, 51, 56, 59, 60, 64, 67, 68, 69, 71, 75, 77, 79, 89, 90, 94, 96, 97,
+            98, 99, 100, 102, 103, 104, 108, 109, 110, 111, 112, 113, 114, 115, 116, 117, 118, 119,
+            120, 121, 122, 124, 125, 126, 128, 129, 130, 131, 133, 134, 139, 141, 142, 143, 144,
+            145, 151, 153, 154, 155, 156, 157, 158, 159, 160, 161, 163, 166, 168, 173, 174, 188,
+            189, 190, 193, 195, 196, 197, 198, 209, 217, 218, 219, 220, 226, 228, 229, 230, 231,
+            232, 233, 235, 236, 237, 238, 239, 240, 241, 242, 243, 244, 245, 246, 247, 248, 249,
+            250, 252, 253, 254, 255, 256, 257, 258, 259, 260, 261, 263, 265, 266, 274, 275, 277,
+            278, 279, 281, 286, 289, 290, 294, 297, 298, 299, 301, 305, 307, 309, 319, 320, 325,
+            326, 327, 328, 329, 330, 331, 332, 333, 337, 338, 339, 340, 341, 342, 343, 344, 346,
+            347, 348, 349, 350, 351, 353, 354, 355, 357, 358, 359, 360, 362, 363, 368, 370, 371,
+            372, 373, 374, 380, 381, 382, 383, 384, 385, 386, 387, 388, 390, 392, 398, 399, 412,
+            413, 414, 417, 419, 420, 423, 429, 437, 438, 439, 440, 446, 448, 449, 450, 451, 452,
+            453, 455, 456, 457, 458, 459, 460, 461, 462, 463, 464, 465, 466, 467, 468, 469, 470,
+            471, 472, 473, 474, 475, 476, 477, 478,
         ];
         RIGID_INDICES
     }
 
     pub fn solve_centroid(&self, landmarks: &Vec<[f32; 3]>) -> Option<(f64, f64)> {
         let rigid_indices = Self::get_rigid_landmark_indices();
-
         let mut sum_x = 0.0;
         let mut sum_y = 0.0;
         let count = rigid_indices.len() as f64;
@@ -216,13 +220,12 @@ impl HeadPoseSolver {
                 sum_y += p[1] as f64;
             }
         }
-
         Some((sum_x / count, sum_y / count))
     }
 }
 
 // ==========================================
-// 鼠标控制器
+// 鼠标控制器 (保持不变)
 // ==========================================
 #[derive(Clone, Copy)]
 struct Point2D {
@@ -235,10 +238,8 @@ pub struct HeadMouseController {
     config: MouseConfig,
     screen_width: f64,
     screen_height: f64,
-
     pub enabled: bool,
     anchor: Option<Point2D>,
-
     filtered_pos: Point2D,
     cursor_pos: Point2D,
 }
@@ -276,10 +277,8 @@ impl HeadMouseController {
 
     pub fn reset_anchor(&mut self, cx: f64, cy: f64) {
         self.anchor = Some(Point2D { x: cx, y: cy });
-
         let center_x = self.screen_width / 2.0;
         let center_y = self.screen_height / 2.0;
-
         self.filtered_pos = Point2D {
             x: center_x,
             y: center_y,
@@ -288,7 +287,6 @@ impl HeadMouseController {
             x: center_x,
             y: center_y,
         };
-
         let _ = self
             .enigo
             .move_mouse(center_x as i32, center_y as i32, Coordinate::Abs);
@@ -304,7 +302,6 @@ impl HeadMouseController {
         if !self.enabled || !self.config.enabled {
             return Ok(());
         }
-
         if self.anchor.is_none() {
             self.reset_anchor(cx, cy);
             return Ok(());
@@ -345,7 +342,6 @@ impl HeadMouseController {
         let _ = self
             .enigo
             .move_mouse(final_x as i32, final_y as i32, Coordinate::Abs);
-
         Ok(())
     }
 

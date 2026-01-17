@@ -93,7 +93,6 @@ pub struct GestureConfig {
     // 捏合检测阈值
     pub pinch_threshold_on: f32,  // 按下阈值（越小越灵敏）
     pub pinch_threshold_off: f32, // 松开阈值（需要 > on_threshold）
-    pub pinch_smooth_factor: f32, // 捏合平滑因子 (0.0-1.0，越小越平滑)
 
     // 旋转检测参数
     pub rotation_threshold_degrees: f32, // 旋转触发阈值（度数，推荐30~60）
