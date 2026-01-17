@@ -251,6 +251,7 @@ impl SolverApp {
 
                 // 3. 手势处理
                 if let Some((ref hand_landmarks, _)) = hand_result {
+                    // 手存在时，正常处理
                     match self.gesture_controller.process(hand_landmarks) {
                         HandEvent::PinchStart => {
                             let _ = self.mouse_controller.click_down();
@@ -259,13 +260,17 @@ impl SolverApp {
                             let _ = self.mouse_controller.click_up();
                         }
                         HandEvent::RotateCW => {
-                            let _ = self.mouse_controller.scroll(-1);
+                            let _ = self.mouse_controller.scroll(-2);
                         }
                         HandEvent::RotateCCW => {
-                            let _ = self.mouse_controller.scroll(1);
+                            let _ = self.mouse_controller.scroll(2);
                         }
                         HandEvent::None => {}
                     }
+                } else {
+                    // 【新增】当检测不到手时，显式重置手势控制器状态
+                    // 这样下次手出现时，base_angle 就会重新从 None 开始计算
+                    self.gesture_controller.reset_state();
                 }
 
                 // 4. 头部鼠标处理
