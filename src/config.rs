@@ -49,6 +49,7 @@ pub struct AlgorithmConfigs {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct AlgorithmParams {
+    pub enabled: Option<bool>, // 【新增】是否启用此检测
     pub stability: f32,
     pub threshold: f32,
     pub overlap: Option<f32>,
@@ -104,6 +105,7 @@ pub struct GestureConfig {
 // ==========================================
 #[derive(Debug, Deserialize, Clone)]
 pub struct DebugConfig {
-    pub show_debug_window: bool,    // 是否显示调试窗口
+    #[allow(dead_code)] // 【注】保留配置选项以便用户设置，即使不在代码中使用
+    pub show_debug_window: bool, // 是否显示调试窗口
     pub window_always_on_top: bool, // 摄像头窗口是否置顶
 }

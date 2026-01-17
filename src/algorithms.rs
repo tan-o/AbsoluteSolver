@@ -274,14 +274,14 @@ pub fn letterbox(src: &Mat, target_width: i32, target_height: i32) -> Result<Pre
 pub fn auto_correct_exposure(src: &Mat) -> Result<Mat> {
     // 【优化】用小尺寸图计算亮度，避免处理全分辨率
     let mut small_src = Mat::default();
-    let small_size = Size::new(320, 240);
+    let small_size = Size::new(160, 120); // 【优化】降低采样分辨率从320x240到160x120
     imgproc::resize(
         src,
         &mut small_src,
         small_size,
         0.0,
         0.0,
-        imgproc::INTER_AREA,
+        imgproc::INTER_LINEAR, // 【优化】使用更快的插值算法
     )?;
 
     let mut gray = Mat::default();
@@ -300,7 +300,8 @@ pub fn auto_correct_exposure(src: &Mat) -> Result<Mat> {
     let mean_scalar = core::mean(&gray, &core::no_array())?;
     let mean_brightness = mean_scalar[0] as f32;
 
-    if mean_brightness > 100.0 && mean_brightness < 160.0 {
+    // 【优化】放宽亮度范围，减少LUT计算次数
+    if mean_brightness > 95.0 && mean_brightness < 165.0 {
         return Ok(src.clone());
     }
 

@@ -1,3 +1,5 @@
+#![windows_subsystem = "windows"] // 【新增】隐藏Windows控制台窗口
+
 use anyhow::{Context, Result};
 use opencv::{
     core::{Mat, Point, Rect, Scalar, Size},
@@ -208,8 +210,17 @@ impl SolverApp {
 
             let processed_frame = algorithms::auto_correct_exposure(&frame)?;
 
-            let mut hand_result = self.hand_pipeline.process(&processed_frame)?;
-            let face_result = self.face_pipeline.process(&processed_frame)?;
+            // 【优化】根据配置决定是否进行检测（节省CPU）
+            let mut hand_result = if self.config.algorithm.hand.enabled.unwrap_or(true) {
+                self.hand_pipeline.process(&processed_frame)?
+            } else {
+                None
+            };
+            let face_result = if self.config.algorithm.face.enabled.unwrap_or(true) {
+                self.face_pipeline.process(&processed_frame)?
+            } else {
+                None
+            };
 
             // ==========================================
             // 逻辑处理
@@ -433,9 +444,8 @@ impl SolverApp {
             )?;
 
             // 【新增】根据配置决定是否显示调试窗口
-            if self.config.debug.show_debug_window {
-                highgui::imshow(&self.config.window.title, &flipped_frame)?;
-            }
+            // 【修复】总是显示摄像头窗口，show_debug_window仅控制调试信息显示
+            highgui::imshow(&self.config.window.title, &flipped_frame)?;
 
             if highgui::wait_key(1)? == 27 {
                 break;

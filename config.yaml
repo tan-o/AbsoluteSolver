@@ -39,11 +39,13 @@ performance:
 
 algorithm:
   hand:
+    enabled: true # 【新增】是否启用手部检测 (捏合/旋转手势)
     stability: 0.7
     threshold: 0.8
     overlap: 0.9 # 手脸重叠屏蔽阈值
 
   face:
+    enabled: true # 【新增】是否启用人脸检测 (头部鼠标控制)
     stability: 0.8
     threshold: 0.6
 
@@ -123,7 +125,7 @@ debug:
   # show_debug_window: 是否显示实时调试窗口
   #   - true: 显示原始帧 + 检测结果 (CPU占用高)
   #   - false: 隐藏调试窗口，只显示摄像头视图
-  show_debug_window: true
+  show_debug_window: false
 
   # window_always_on_top: 摄像头窗口是否置顶
   #   - true: 窗口始终在最前面
