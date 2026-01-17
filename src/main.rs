@@ -39,9 +39,25 @@ struct SolverApp {
 
 impl SolverApp {
     fn new(config_path: &str) -> Result<Self> {
-        println!(">> [Init] 系统初始化中...");
+        // ========================================================
+        // 【新增修复】根据配置动态决定是否弹出 CMD 调试黑框
+        // ========================================================
         let file = File::open(config_path).context("无法打开配置文件")?;
         let config: Config = serde_yaml::from_reader(file).context("配置格式错误")?;
+        if config.debug.show_debug_window {
+            #[cfg(target_os = "windows")]
+            unsafe {
+                // 调用 Windows API 分配控制台
+                extern "system" {
+                    fn AllocConsole() -> i32;
+                }
+                AllocConsole();
+                // 这一点很重要：分配后需要重新绑定标准输出，否则 println! 可能还是不显示
+                // 但在 Rust 中，通常 AllocConsole 后直接 println! 就能生效
+                println!(">> [Debug] 调试窗口已开启");
+            }
+        }
+        println!(">> [Init] 系统初始化中...");
         Self::setup_window(&config)?;
 
         let mut camera = videoio::VideoCapture::new(config.camera.index, videoio::CAP_ANY)?;
@@ -471,12 +487,49 @@ impl SolverApp {
                 false,
             )?;
 
-            // 【新增】根据配置决定是否显示调试窗口
-            // 【修复】总是显示摄像头窗口，show_debug_window仅控制调试信息显示
+            // ========================================================
+            // 【重点修改】窗口显示与退出逻辑
+            // ========================================================
+
+            // 1. 先显示图像
             highgui::imshow(&self.config.window.title, &flipped_frame)?;
 
-            if highgui::wait_key(1)? == 27 {
+            // 2. 关键：处理按键事件（这也负责处理窗口的鼠标点击事件）
+            let key = highgui::wait_key(1)?;
+            if key == 27 {
+                // ESC 键
                 break;
+            }
+
+            // 3. 【修复】检测窗口是否被点击 "X" 关闭
+            // get_window_property 需要窗口存在才能工作
+            // 如果窗口被关闭，WND_PROP_AUTOSIZE 获取通常会失败或返回 -1
+            // WND_PROP_VISIBLE 在某些 backend 下如果不准，可以用 try_catch 的思路
+            let prop_result = highgui::get_window_property(
+                &self.config.window.title,
+                highgui::WND_PROP_AUTOSIZE, // 检测窗口属性是否存在
+            );
+
+            match prop_result {
+                Ok(_) => {
+                    // 再次确认可见性 (双重保险)
+                    // 注意：在 OpenCV 某些版本中，关闭窗口后 get_window_property 可能会抛出错误
+                    // 所以这里的 match Ok/Err 结构本身就是一种检测
+                    if let Ok(visible) = highgui::get_window_property(
+                        &self.config.window.title,
+                        highgui::WND_PROP_VISIBLE,
+                    ) {
+                        if visible < 1.0 {
+                            println!(">> [Info] 窗口已关闭 (X)，退出程序。");
+                            break;
+                        }
+                    }
+                }
+                Err(_) => {
+                    // 如果获取属性直接报错，说明窗口句柄已经无效了（肯定是被关了）
+                    println!(">> [Info] 窗口句柄丢失，退出程序。");
+                    break;
+                }
             }
 
             // 【恢复】帧率控制逻辑

@@ -48,7 +48,7 @@ impl HandPipeline {
             .with_execution_providers([
                 ort::execution_providers::DirectMLExecutionProvider::default().build(),
             ])?
-            .with_intra_threads(4)? // 减少线程竞争
+            .with_intra_threads(1)? // 减少线程竞争
             .commit_from_file(detector_path)
             .context("无法加载 YOLO Hand Detector")?;
 
@@ -58,7 +58,7 @@ impl HandPipeline {
             .with_execution_providers([
                 ort::execution_providers::DirectMLExecutionProvider::default().build(),
             ])?
-            .with_intra_threads(4)? // 减少线程竞争
+            .with_intra_threads(1)? // 减少线程竞争
             .commit_from_file(landmark_path)
             .context("无法加载 Hand Landmark Detector")?;
 
@@ -339,7 +339,7 @@ impl FacePipeline {
             .with_execution_providers([
                 ort::execution_providers::DirectMLExecutionProvider::default().build(),
             ])?
-            .with_intra_threads(4)? // 减少线程竞争
+            .with_intra_threads(1)? // 减少线程竞争
             .commit_from_file(detector_path)
             .context("无法加载 FaceDetector")?;
 
@@ -348,7 +348,7 @@ impl FacePipeline {
             .with_execution_providers([
                 ort::execution_providers::DirectMLExecutionProvider::default().build(),
             ])?
-            .with_intra_threads(4)? // 减少线程竞争
+            .with_intra_threads(1)? // 减少线程竞争
             .commit_from_file(landmark_path)
             .context("无法加载 FaceLandmarkDetector")?;
 
