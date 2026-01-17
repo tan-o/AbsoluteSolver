@@ -25,3 +25,32 @@ algorithm:
 assets:
   avatar: "pictures/avatar.jpg"
   scale: 1.2 # 建议 1.2 ~ 1.5，完全覆盖头部
+
+mouse:
+  enabled: true
+  auto_screen_size: true
+  manual_width: 1440.0
+  manual_height: 900.0
+
+  # 线性灵敏度: 头动 1 像素 = 鼠标动 30 像素
+  sensitivity_x: 20.0
+  sensitivity_y: 25.0 # Y轴通常稍微大一点方便卷动网页
+
+  # EMA 平滑系数 (0.01 ~ 1.0)
+  # 越小越稳，越大越快。0.15 是个不错的平衡点。
+  smoothing: 0.15
+
+  # 死区 (像素)
+  # 小于此数值的头部微颤将被忽略
+  dead_zone: 0.5
+
+  invert_x: true
+  invert_y: false
+
+# 【新增】全局快捷键配置
+shortcuts:
+  # 格式：["修饰键1", "修饰键2", "按键"] (不区分大小写)
+  # 随时开关鼠标连接
+  toggle_mouse: ["LControl", "LAlt", "O"]
+  # 重置鼠标中心锚点
+  reset_center: ["LControl", "LAlt", "R"]

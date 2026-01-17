@@ -6,25 +6,32 @@ use opencv::{
     videoio,
 };
 use std::fs::File;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant}; // 【恢复】Duration 用于 FPS 控制
 
-mod algorithm;
+mod algorithms;
 mod config;
-mod hand;
-mod head;
-mod preprocess;
+mod detectors;
+mod interaction;
+mod shortcuts;
 
 use config::Config;
-use hand::HandPipeline;
-use head::FacePipeline;
+use detectors::{FacePipeline, HandPipeline};
+use interaction::{HandEvent, HandGestureController, HeadMouseController, HeadPoseSolver};
+use shortcuts::{AppAction, InputManager};
 
 struct SolverApp {
     config: Config,
     camera: videoio::VideoCapture,
     hand_pipeline: HandPipeline,
     face_pipeline: FacePipeline,
-    last_known_face: Option<(Rect, Instant)>,
-    // 存储原始的高分辨率遮罩图
+    mouse_controller: HeadMouseController,
+    input_manager: InputManager,
+    pose_solver: HeadPoseSolver,
+    gesture_controller: HandGestureController,
+
+    last_valid_angles: Option<(f64, f64)>,
+    last_known_face_rect: Option<(Rect, Instant)>,
+    last_valid_landmarks: Option<Vec<[f32; 3]>>,
     raw_face_mask: Mat,
 }
 
@@ -43,25 +50,26 @@ impl SolverApp {
         camera.set(videoio::CAP_PROP_FRAME_HEIGHT, config.camera.height as f64)?;
         camera.set(videoio::CAP_PROP_FPS, 60.0)?;
 
-        println!(
-            ">> [Init] 摄像头分辨率: {}x{}",
-            config.camera.width, config.camera.height
-        );
         let hand_pipeline = HandPipeline::new(config.algorithm.hand.clone())?;
         let face_pipeline = FacePipeline::new(config.algorithm.face.clone())?;
-
-        // ==========================================
-        // 加载原始遮罩图 (不缩放)
-        // ==========================================
-        println!(">> [Init] 加载资源: {}", config.assets.avatar);
-        let raw_face_mask = preprocess::load_and_prepare_mask(&config.assets.avatar)?;
+        let mouse_controller = HeadMouseController::new(config.mouse.clone())?;
+        let input_manager = InputManager::new(&config.shortcuts)?;
+        let pose_solver = HeadPoseSolver::new(config.camera.width, config.camera.height)?;
+        let gesture_controller = HandGestureController::new();
+        let raw_face_mask = algorithms::load_and_prepare_mask(&config.assets.avatar)?;
 
         Ok(SolverApp {
             config,
             camera,
             hand_pipeline,
             face_pipeline,
-            last_known_face: None,
+            mouse_controller,
+            input_manager,
+            pose_solver,
+            gesture_controller,
+            last_valid_angles: None,
+            last_known_face_rect: None,
+            last_valid_landmarks: None,
             raw_face_mask,
         })
     }
@@ -75,81 +83,160 @@ impl SolverApp {
     }
 
     fn run(&mut self) -> Result<()> {
-        println!(">> [Run] 开始主循环...");
+        println!(">> [Run] 系统启动成功。快捷键: Ctrl+Alt+O (总开关), Ctrl+Alt+R (重置中心)");
+
         let mut frame = Mat::default();
         let mut display_frame = Mat::default();
         let mut flipped_frame = Mat::default();
-        // 用于存放每帧动态缩放后的遮罩
         let mut current_frame_mask = Mat::default();
 
         let win_w = (self.config.camera.width as f64 * self.config.window.scale) as i32;
         let win_h = (self.config.camera.height as f64 * self.config.window.scale) as i32;
         let gui_size = Size::new(win_w, win_h);
 
-        let mut active_cooldown = 0;
-        let cooldown_frames = self.config.performance.active_fps * 2;
-        const FACE_MEMORY_MS: u128 = 500;
-        let active_fps = self.config.performance.active_fps;
-        let idle_fps = self.config.performance.idle_fps;
-
+        // 【恢复】FPS 控制变量
+        let active_fps = self.config.performance.active_fps as u64;
+        let idle_fps = self.config.performance.idle_fps as u64;
+        let mut active_cooldown = 0; // 交互冷却帧数
         let overlap_threshold = self.config.algorithm.hand.overlap.unwrap_or(0.5);
-        // 获取 YAML 中的缩放比例
-        let avatar_scale_factor = self.config.assets.scale;
 
         loop {
+            // 【恢复】计时开始
             let start_time = Instant::now();
-            self.camera.read(&mut frame)?;
-            if frame.size()?.width == 0 {
-                continue;
-            }
 
-            // 1. 预处理
-            let processed_frame = preprocess::auto_correct_exposure(&frame)?;
-
-            // 2. AI 推理
-            let hand_result = self.hand_pipeline.process(&processed_frame)?;
-            let face_result = self.face_pipeline.process(&processed_frame)?;
-
-            // 3. 逻辑整合
-            let mut final_hand: Option<(Vec<[f32; 3]>, Rect)> = None;
-            let mut final_face: Option<(Vec<[f32; 3]>, Rect)> = None;
-
-            if let Some((landmarks, rect)) = face_result {
-                final_face = Some((landmarks, rect));
-                self.last_known_face = Some((rect, Instant::now()));
-            }
-
-            if let Some((landmarks, hand_rect)) = hand_result {
-                let mut is_false_positive = false;
-                if let Some((face_rect, last_seen)) = &self.last_known_face {
-                    if last_seen.elapsed().as_millis() < FACE_MEMORY_MS {
-                        let intersection = hand_rect & *face_rect;
-                        let intersect_area = intersection.area();
-                        let face_area = face_rect.area() as f32;
-
-                        let coverage = if face_area > 0.0 {
-                            intersect_area as f32 / face_area
-                        } else {
-                            0.0
-                        };
-
-                        let h_cx = hand_rect.x + hand_rect.width / 2;
-                        let h_cy = hand_rect.y + hand_rect.height / 2;
-                        let f_cx = face_rect.x + face_rect.width / 2;
-                        let f_cy = face_rect.y + face_rect.height / 2;
-                        let dist = (((h_cx - f_cx).pow(2) + (h_cy - f_cy).pow(2)) as f32).sqrt();
-
-                        if coverage > overlap_threshold || dist < (face_rect.width as f32 * 0.5) {
-                            is_false_positive = true;
+            // 【新增】视频捕获错误处理和重连机制
+            match self.camera.read(&mut frame) {
+                Ok(true) => {
+                    // 成功读取帧
+                }
+                Ok(false) => {
+                    // read() 返回 false 但未报错，通常表示流结束或暂时无法读取
+                    eprintln!(">> [Warn] 无法读取视频帧，尝试重新连接摄像头...");
+                    match self.reconnect_camera() {
+                        Ok(_) => {
+                            eprintln!(">> [Info] 摄像头重新连接成功");
+                            continue;
+                        }
+                        Err(e) => {
+                            eprintln!(">> [Error] 摄像头重连失败: {}", e);
+                            std::thread::sleep(Duration::from_millis(500));
+                            continue;
                         }
                     }
                 }
-                if !is_false_positive {
-                    final_hand = Some((landmarks, hand_rect));
+                Err(e) => {
+                    // read() 返回错误（如 MSMF 的 Error: -2147418113）
+                    eprintln!(
+                        ">> [Error] 视频捕获出错（通常是摄像头断开或驱动问题）: {}",
+                        e
+                    );
+                    match self.reconnect_camera() {
+                        Ok(_) => {
+                            eprintln!(">> [Info] 摄像头重新连接成功");
+                            continue;
+                        }
+                        Err(e) => {
+                            eprintln!(">> [Error] 摄像头重连失败: {}", e);
+                            std::thread::sleep(Duration::from_millis(500));
+                            continue;
+                        }
+                    }
                 }
             }
 
-            // 4. 绘制准备
+            // 检查读取的帧是否有效
+            if frame.size()?.width == 0 {
+                eprintln!(">> [Warn] 读取的帧无效（大小为0），跳过本帧");
+                continue;
+            }
+
+            let processed_frame = algorithms::auto_correct_exposure(&frame)?;
+
+            let mut hand_result = self.hand_pipeline.process(&processed_frame)?;
+            let face_result = self.face_pipeline.process(&processed_frame)?;
+
+            // ==========================================
+            // 逻辑处理
+            // ==========================================
+
+            // 1. 如果检测到人或者手，激活高 FPS 模式，否则进入休眠省电模式
+            if hand_result.is_some() || face_result.is_some() {
+                active_cooldown = 60; // 保持 1秒 高性能
+            }
+
+            // 2. 总开关控制 (鼠标 & 手势)
+            if self.mouse_controller.enabled {
+                // 【恢复】手脸重叠剔除 (防止擦脸时误触)
+                if let Some((_, face_rect)) = face_result {
+                    if let Some((_, ref mut hand_rect)) = hand_result {
+                        let intersection = *hand_rect & face_rect;
+                        let intersect_area = intersection.area();
+                        let hand_area = hand_rect.area();
+                        if hand_area > 0 {
+                            let ratio = intersect_area as f32 / hand_area as f32;
+                            if ratio > overlap_threshold {
+                                // 重叠过大，丢弃手部数据
+                                hand_result = None;
+                            }
+                        }
+                    }
+                }
+
+                // 3. 手势处理
+                if let Some((ref hand_landmarks, _)) = hand_result {
+                    match self.gesture_controller.process(hand_landmarks) {
+                        HandEvent::PinchStart => {
+                            let _ = self.mouse_controller.click_down();
+                        }
+                        HandEvent::PinchEnd => {
+                            let _ = self.mouse_controller.click_up();
+                        }
+                        HandEvent::RotateCW => {
+                            let _ = self.mouse_controller.scroll(-1);
+                        }
+                        HandEvent::RotateCCW => {
+                            let _ = self.mouse_controller.scroll(1);
+                        }
+                        HandEvent::None => {}
+                    }
+                }
+
+                // 4. 头部鼠标处理
+                if let Some((ref landmarks, rect)) = face_result {
+                    self.last_valid_landmarks = Some(landmarks.clone());
+                    self.last_known_face_rect = Some((rect, Instant::now()));
+
+                    if let Some((cx, cy)) = self.pose_solver.solve_centroid(landmarks) {
+                        self.last_valid_angles = Some((cx, cy));
+                        if let Err(e) = self.mouse_controller.update(cx, cy) {
+                            eprintln!(">> [Error] {}", e);
+                        }
+                    }
+                }
+            }
+
+            // 5. 快捷键
+            match self.input_manager.check_action() {
+                AppAction::ToggleMouse => self.mouse_controller.toggle(),
+                AppAction::ResetAnchor => {
+                    // 优先使用当前帧，否则使用缓存
+                    let l_opt = if let Some((ref l, _)) = face_result {
+                        Some(l)
+                    } else {
+                        self.last_valid_landmarks.as_ref()
+                    };
+                    if let Some(l) = l_opt {
+                        if let Some((cx, cy)) = self.pose_solver.solve_centroid(l) {
+                            self.mouse_controller.reset_anchor(cx, cy);
+                        }
+                    }
+                }
+                AppAction::None => {}
+            }
+
+            // ==========================================
+            // 渲染绘制
+            // ==========================================
             imgproc::resize(
                 &processed_frame,
                 &mut display_frame,
@@ -159,165 +246,204 @@ impl SolverApp {
                 imgproc::INTER_LINEAR,
             )?;
             opencv::core::flip(&display_frame, &mut flipped_frame, 1)?;
-
             let win_scale = self.config.window.scale as f32;
-            let mut detected_hand = false;
-            let mut detected_face = false;
 
             // 绘制手
-            if let Some((landmarks, rect)) = final_hand {
-                detected_hand = true;
-                active_cooldown = cooldown_frames;
-
+            if let Some((landmarks, rect)) = hand_result {
+                // 【修复】使用 _landmarks 消除警告，或者这里我们确实要画出来
                 let x = (rect.x as f32 * win_scale) as i32;
                 let y = (rect.y as f32 * win_scale) as i32;
-                let w = (rect.width as f32 * win_scale) as i32;
-                let h = (rect.height as f32 * win_scale) as i32;
-                let mirror_x = win_w - (x + w);
+                let mirror_x = win_w - (x + (rect.width as f32 * win_scale) as i32);
+
+                let is_active =
+                    self.mouse_controller.enabled && self.gesture_controller.is_pinched();
+                let color = if is_active {
+                    Scalar::new(0.0, 0.0, 255.0, 0.0)
+                } else if self.mouse_controller.enabled {
+                    Scalar::new(0.0, 255.0, 0.0, 0.0)
+                } else {
+                    Scalar::new(100.0, 100.0, 100.0, 0.0)
+                };
 
                 imgproc::rectangle(
                     &mut flipped_frame,
-                    Rect::new(mirror_x, y, w, h),
-                    Scalar::new(0.0, 255.0, 0.0, 0.0),
+                    Rect::new(
+                        mirror_x,
+                        y,
+                        (rect.width as f32 * win_scale) as i32,
+                        (rect.height as f32 * win_scale) as i32,
+                    ),
+                    color,
                     2,
-                    imgproc::LINE_8,
+                    8,
                     0,
                 )?;
 
+                // 【修复】把骨架画出来，这样 landmarks 就被使用了，警告消除
                 for p in landmarks {
-                    let mut px = p[0] * win_scale;
+                    let px = win_w as f32 - (p[0] * win_scale);
                     let py = p[1] * win_scale;
-                    px = win_w as f32 - px;
                     imgproc::circle(
                         &mut flipped_frame,
                         Point::new(px as i32, py as i32),
-                        4,
-                        Scalar::new(0.0, 0.0, 255.0, 0.0),
+                        2,
+                        color,
                         -1,
-                        imgproc::LINE_8,
+                        8,
                         0,
+                    )?;
+                }
+
+                if is_active {
+                    imgproc::put_text(
+                        &mut flipped_frame,
+                        "CLICK",
+                        Point::new(mirror_x, y - 5),
+                        imgproc::FONT_HERSHEY_SIMPLEX,
+                        0.8,
+                        color,
+                        2,
+                        8,
+                        false,
                     )?;
                 }
             }
 
-            // 绘制脸 + 动态遮罩
-            if let Some((landmarks, rect)) = final_face {
-                detected_face = true;
-                if !detected_hand {
-                    active_cooldown = cooldown_frames;
-                }
+            // 绘制脸部遮罩
+            if let Some((rect, _)) = self.last_known_face_rect {
+                if self.last_known_face_rect.unwrap().1.elapsed().as_millis() < 500 {
+                    if let Some(ref landmarks) = self.last_valid_landmarks {
+                        if let (Some(nose), Some(leye), Some(reye)) =
+                            (landmarks.get(1), landmarks.get(33), landmarks.get(263))
+                        {
+                            let cx_global = (nose[0] + leye[0] + reye[0]) / 3.0;
+                            let cy_global = (nose[1] + leye[1] + reye[1]) / 3.0;
+                            let cx_gui = win_w as f32 - (cx_global * win_scale);
+                            let cy_gui = cy_global * win_scale;
+                            let face_w = rect.width as f32 * win_scale * self.config.assets.scale;
+                            let face_h = rect.height as f32 * win_scale * self.config.assets.scale;
 
-                if let (Some(nose), Some(leye), Some(reye)) =
-                    (landmarks.get(1), landmarks.get(33), landmarks.get(263))
-                {
-                    // 1. 计算三个关键点的几何中心 (Global坐标)
-                    let cx_global = (nose[0] + leye[0] + reye[0]) / 3.0;
-                    let cy_global = (nose[1] + leye[1] + reye[1]) / 3.0;
-
-                    // 2. 映射到 镜像后的 GUI 坐标
-                    let cx_gui = win_w as f32 - (cx_global * win_scale);
-                    let cy_gui = cy_global * win_scale;
-
-                    // ==========================================
-                    // 动态尺寸计算核心逻辑
-                    // ==========================================
-                    // 1. 获取检测框在 GUI 窗口中的实际像素大小
-                    //    rect.width 是 Global(640) 下的尺寸，乘以 window.scale 才是当前显示的尺寸
-                    let face_w_gui = rect.width as f32 * win_scale;
-                    let face_h_gui = rect.height as f32 * win_scale;
-
-                    // 2. 乘以 yaml 配置的缩放比例 (avatar_scale_factor)
-                    let target_w = (face_w_gui * avatar_scale_factor) as i32;
-                    let target_h = (face_h_gui * avatar_scale_factor) as i32;
-
-                    // 3. 实时缩放图片 (仅当尺寸有效时)
-                    if target_w > 0 && target_h > 0 {
-                        imgproc::resize(
-                            &self.raw_face_mask,
-                            &mut current_frame_mask,
-                            Size::new(target_w, target_h),
-                            0.0,
-                            0.0,
-                            imgproc::INTER_LINEAR,
-                        )?;
-
-                        // 4. 计算左上角坐标 (中心点 - 图片的一半)
-                        let top_left =
-                            Point::new(cx_gui as i32 - target_w / 2, cy_gui as i32 - target_h / 2);
-
-                        // 5. 叠加
-                        preprocess::overlay_image(
-                            &mut flipped_frame,
-                            &current_frame_mask,
-                            top_left,
-                        )?;
+                            if face_w > 0.0 && face_h > 0.0 {
+                                imgproc::resize(
+                                    &self.raw_face_mask,
+                                    &mut current_frame_mask,
+                                    Size::new(face_w as i32, face_h as i32),
+                                    0.0,
+                                    0.0,
+                                    imgproc::INTER_LINEAR,
+                                )?;
+                                let top_left = Point::new(
+                                    cx_gui as i32 - face_w as i32 / 2,
+                                    cy_gui as i32 - face_h as i32 / 2,
+                                );
+                                algorithms::overlay_image(
+                                    &mut flipped_frame,
+                                    &current_frame_mask,
+                                    top_left,
+                                )?;
+                            }
+                        }
                     }
                 }
-
-                // 绘制调试用的人脸框 (如果你不想看到蓝框，可以注释掉下面这一段)
-                // let x = (rect.x as f32 * win_scale) as i32;
-                // let y = (rect.y as f32 * win_scale) as i32;
-                // let w = (rect.width as f32 * win_scale) as i32;
-                // let h = (rect.height as f32 * win_scale) as i32;
-                // let mirror_x = win_w - (x + w);
-
-                // imgproc::rectangle(
-                //     &mut flipped_frame,
-                //     Rect::new(mirror_x, y, w, h),
-                //     Scalar::new(255.0, 0.0, 0.0, 0.0),
-                //     1,
-                //     imgproc::LINE_8,
-                //     0,
-                // )?;
             }
 
-            // UI
-            let target_fps = if active_cooldown > 0 {
-                active_cooldown -= 1;
+            // UI 信息
+            let current_fps = if active_cooldown > 0 {
                 active_fps
             } else {
                 idle_fps
             };
-            let status_text = format!(
-                "FPS: {} | HAND: {} | FACE: {}",
-                target_fps, detected_hand, detected_face
+            let status = format!(
+                "FPS: {} | Sys: {}",
+                current_fps,
+                if self.mouse_controller.enabled {
+                    "ON"
+                } else {
+                    "OFF"
+                }
             );
-            let color = if detected_hand || detected_face {
-                Scalar::new(0.0, 255.0, 0.0, 0.0)
-            } else {
-                Scalar::new(0.0, 255.0, 255.0, 0.0)
-            };
-
             imgproc::put_text(
                 &mut flipped_frame,
-                &status_text,
+                &status,
                 Point::new(10, 30),
                 imgproc::FONT_HERSHEY_SIMPLEX,
                 0.6,
-                color,
+                Scalar::new(0.0, 255.0, 0.0, 0.0),
                 2,
-                imgproc::LINE_8,
+                8,
                 false,
             )?;
 
             highgui::imshow(&self.config.window.title, &flipped_frame)?;
+            if highgui::wait_key(1)? == 27 {
+                break;
+            }
+
+            // 【恢复】帧率控制逻辑
+            if active_cooldown > 0 {
+                active_cooldown -= 1;
+            }
 
             let elapsed = start_time.elapsed();
-            let frame_ms = 1000 / target_fps as u64;
-            let target_dur = Duration::from_millis(frame_ms);
-
-            if target_dur > elapsed {
-                let wait = (target_dur - elapsed).as_millis() as i32;
-                if highgui::wait_key(wait.max(1))? == 27 {
-                    break;
-                }
-            } else {
-                if highgui::wait_key(1)? == 27 {
-                    break;
-                }
+            let frame_duration = Duration::from_millis(1000 / current_fps);
+            if frame_duration > elapsed {
+                // 如果处理太快，睡一会，降低 CPU 占用
+                std::thread::sleep(frame_duration - elapsed);
             }
         }
         Ok(())
+    }
+
+    /// 重新连接摄像头
+    fn reconnect_camera(&mut self) -> Result<()> {
+        eprintln!(">> [Info] 正在断开并重新连接摄像头...");
+
+        // 关闭旧的摄像头连接
+        let _ = self.camera.release();
+
+        // 稍作延迟，让驱动有时间释放资源
+        std::thread::sleep(Duration::from_millis(1000));
+
+        // 尝试重新打开摄像头
+        let max_retries = 3;
+        for attempt in 1..=max_retries {
+            eprintln!(
+                ">> [Info] 尝试重新连接摄像头... (第 {}/{} 次)",
+                attempt, max_retries
+            );
+
+            match videoio::VideoCapture::new(self.config.camera.index, videoio::CAP_ANY) {
+                Ok(mut new_camera) => {
+                    if let Ok(is_opened) = videoio::VideoCapture::is_opened(&new_camera) {
+                        if is_opened {
+                            // 设置摄像头属性
+                            let _ = new_camera.set(
+                                videoio::CAP_PROP_FRAME_WIDTH,
+                                self.config.camera.width as f64,
+                            );
+                            let _ = new_camera.set(
+                                videoio::CAP_PROP_FRAME_HEIGHT,
+                                self.config.camera.height as f64,
+                            );
+                            let _ = new_camera.set(videoio::CAP_PROP_FPS, 60.0);
+
+                            self.camera = new_camera;
+                            eprintln!(">> [Info] 摄像头成功重新连接！");
+                            return Ok(());
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!(">> [Warn] 第 {} 次重连尝试失败: {}", attempt, e);
+                }
+            }
+
+            if attempt < max_retries {
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        }
+
+        anyhow::bail!("经过多次尝试，无法重新连接摄像头")
     }
 }
 

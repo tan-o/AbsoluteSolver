@@ -4,13 +4,18 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+nalgebra = "0.34.1"
 ort = { version = "2.0.0-rc.11", features = ["ndarray", "copy-dylibs","directml"] }
-opencv = { version = "0.98.1", default-features = false, features = ["videoio", "imgproc", "highgui","imgcodecs"] }
+opencv = { version = "0.98.1", default-features = false, features = ["videoio", "imgproc", "highgui","imgcodecs","calib3d"] }
 # 系统交互
-enigo = "0.6.1"
+enigo = { version = "0.6.1", features = ["serde"] }
 ndarray = "0.17.2"
 # 错误处理
 anyhow = "1.0.100"
+device_query = "4.0.1"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_yaml = "0.9.34-deprecated"
 rdev = "0.5.3"
+
+# 【新增】用于获取屏幕逻辑分辨率
+winit = "0.30.12"

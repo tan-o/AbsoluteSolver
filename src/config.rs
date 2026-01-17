@@ -12,6 +12,10 @@ pub struct Config {
 
     // 【新增】资源配置
     pub assets: AssetsConfig,
+
+    pub mouse: MouseConfig,
+    // 【新增】快捷键配置
+    pub shortcuts: ShortcutsConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -51,4 +55,28 @@ pub struct AlgorithmParams {
 pub struct AssetsConfig {
     pub avatar: String,
     pub scale: f32,
+}
+
+// 【新增】
+#[derive(Debug, Deserialize, Clone)]
+pub struct MouseConfig {
+    pub enabled: bool,
+    pub auto_screen_size: bool, // 是否自动检测分辨率
+    pub manual_width: f64,      // 手动备选宽度
+    pub manual_height: f64,     // 手动备选高度
+    pub sensitivity_x: f32,     // X轴灵敏度 (建议 1.5 ~ 3.0)
+    pub sensitivity_y: f32,     // Y轴灵敏度
+    pub smoothing: f32,         // 平滑系数 (Beta值，越小越平滑但延迟越高)
+    pub dead_zone: f32,         // 中心死区 (像素)，防止微小抖动
+    // 【新增】
+    pub invert_x: bool,
+    pub invert_y: bool,
+}
+
+// 【新增】快捷键结构体
+#[derive(Debug, Deserialize, Clone)]
+pub struct ShortcutsConfig {
+    // 使用 Vec<String> 允许用户定义组合键，例如 ["LControl", "LAlt", "R"]
+    pub reset_center: Vec<String>,
+    pub toggle_mouse: Vec<String>,
 }
