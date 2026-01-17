@@ -108,10 +108,13 @@ gesture:
   pinch_smooth_factor: 0.20
 
   # 旋转检测参数
-  # rotation_slope_threshold: 斜率阈值 (判断是否为竖直动作)
-  #   - 用于区分上下滚动和左右摆动
-  #   - 推荐范围：0.5 ~ 1.2
-  rotation_slope_threshold: 0.8
+  # rotation_threshold_degrees: 旋转触发阈值（角度制，单位：度）
+  #   - 用于判断手相对于基准方向旋转了多少度才触发滚轮事件
+  #   - 越小越灵敏，越容易触发滚轮
+  #   - 推荐范围：30 ~ 60 度
+  #   - 如果反应太灵敏，增大到 50-60
+  #   - 如果反应不够灵敏，减小到 30-40
+  rotation_threshold_degrees: 45.0
 
   # rotation_cooldown_ms: 旋转冷却时间（毫秒）
   #   - 两次旋转事件之间的最小间隔

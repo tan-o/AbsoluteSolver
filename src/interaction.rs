@@ -109,12 +109,19 @@ impl HandGestureController {
             return event;
         }
 
-        // 5. 改进的相对旋转检测
-        let (ix, iy) = p(5); // 食指根部
-        let (px, py) = p(17); // 小指根部
+        // 5. 改进的相对旋转检测 - 使用中指和手掌底部中轴线
+        // 中指尖端: 索引12 (Middle finger tip)
+        // 手掌底部中轴: 食指根部(5)和小指根部(17)的中点
+        let (m_tip_x, m_tip_y) = p(12); // 中指尖端
+        
+        // 计算手掌底部中轴的中点
+        let (index_root_x, index_root_y) = p(5);  // 食指根部
+        let (pinky_root_x, pinky_root_y) = p(17); // 小指根部
+        let palm_center_x = (index_root_x + pinky_root_x) / 2.0;
+        let palm_center_y = (index_root_y + pinky_root_y) / 2.0;
 
-        // 计算当前手掌角度 (弧度)
-        let current_angle = (py - iy).atan2(px - ix);
+        // 从手掌底部中点到中指尖的角度
+        let current_angle = (m_tip_y - palm_center_y).atan2(m_tip_x - palm_center_x);
 
         // 如果是新检测到的手，记录基准角度
         let base = *self.base_angle.get_or_insert(current_angle);
@@ -129,7 +136,7 @@ impl HandGestureController {
         }
 
         if self.last_rotation_time.elapsed().as_millis() > self.config.rotation_cooldown_ms {
-            let threshold = 45.0f32.to_radians(); // 设定为 45 度
+            let threshold = self.config.rotation_threshold_degrees.to_radians();
 
             if diff > threshold {
                 self.last_rotation_time = Instant::now();
@@ -154,26 +161,41 @@ impl HeadPoseSolver {
         Ok(Self)
     }
 
-    /// 计算 55 点刚性重心 (High-Density Rigid Centroid)
-    /// 这里的逻辑是：物理平均。
-    /// 无论单个点怎么抖，55个点的平均值波动极小。
+    /// 获取实际使用的刚性特征点索引
+    pub fn get_rigid_landmark_indices() -> &'static [usize] {
+        const RIGID_INDICES: &[usize] = &[
+            // === 1. 中轴线 (从发际线到鼻尖) ===
+            10, 151, 9, 8, 168, 6, 197, 195, 5, 4, 1,
+            // === 2. 整个额头区域 (高密度网格) ===
+            // 左额头
+            109, 67, 103, 54, 21, 162, 127, 234, 93, // 右额头
+            338, 297, 332, 284, 251, 389, 356, 454, 323,
+            // === 3. 眉骨 (眉毛下方的骨头) ===
+            // 左眉
+            46, 53, 52, 65, 55, 70, 63, 105, 66, 107, // 右眉
+            276, 283, 282, 295, 285, 336, 296, 334, 293, 300,
+            // === 4. 眼眶骨 (红框下边缘划过的地方) ===
+            // 左眼眶下沿 (避开会动的眼皮)
+            117, 118, 119, 120, 121, 47, // 右眼眶下沿
+            346, 347, 348, 349, 350, 277,
+            // === 5. 鼻梁两侧与脸颊连接处 ===
+            // 左侧
+            123, 50, 114, 192, // 右侧
+            352, 280, 343, 416,
+        ];
+        RIGID_INDICES
+    }
+
+    /// 这里的逻辑是：物理平均。。
     pub fn solve_centroid(&self, landmarks: &Vec<[f32; 3]>) -> Option<(f64, f64)> {
         // 刚性点集合 (Rigid Landmarks) - 仅包含骨骼点
-        let rigid_indices = [
-            // 鼻梁
-            168, 6, 197, 195, 5, 4, 1, 19, 94, 2, // 左眉骨
-            46, 53, 52, 65, 55, 70, 63, 105, 66, 107, // 右眉骨
-            276, 283, 282, 295, 285, 300, 293, 334, 296, 336, // 左眼眶骨
-            33, 246, 161, 160, 159, 158, 157, 173, 133, 155, 154, 153, // 右眼眶骨
-            263, 466, 388, 387, 386, 385, 384, 398, 362, 382, 381, 380, // 眉心
-            9,
-        ];
+        let rigid_indices = Self::get_rigid_landmark_indices();
 
         let mut sum_x = 0.0;
         let mut sum_y = 0.0;
         let count = rigid_indices.len() as f64;
 
-        for &idx in &rigid_indices {
+        for &idx in rigid_indices {
             if let Some(p) = landmarks.get(idx) {
                 sum_x += p[0] as f64;
                 sum_y += p[1] as f64;

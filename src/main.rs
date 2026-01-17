@@ -380,22 +380,26 @@ impl SolverApp {
             if let Some((rect, _)) = self.last_known_face_rect {
                 if self.last_known_face_rect.unwrap().1.elapsed().as_millis() < 500 {
                     if let Some(ref landmarks) = self.last_valid_landmarks {
-                        // 新增逻辑：如果 scale 为 0，绘制 468 个特征点
-                        if self.config.assets.scale <= 0.0 {
-                            for p in landmarks {
+                        // 绘制实际使用的刚性特征点
+                        let rigid_indices = HeadPoseSolver::get_rigid_landmark_indices();
+                        for &idx in rigid_indices {
+                            if let Some(p) = landmarks.get(idx) {
                                 let px = win_w as f32 - (p[0] * win_scale);
                                 let py = p[1] * win_scale;
                                 imgproc::circle(
                                     &mut flipped_frame,
                                     Point::new(px as i32, py as i32),
-                                    1,                                   // 特征点半径
+                                    2,                                   // 特征点半径
                                     Scalar::new(0.0, 255.0, 255.0, 0.0), // 黄色
                                     -1,
                                     8,
                                     0,
                                 )?;
                             }
-                        } else {
+                        }
+
+                        // 如果启用了虚拟头像，绘制头像
+                        if self.config.assets.scale > 0.0 {
                             if let (Some(nose), Some(leye), Some(reye)) =
                                 (landmarks.get(1), landmarks.get(33), landmarks.get(263))
                             {
