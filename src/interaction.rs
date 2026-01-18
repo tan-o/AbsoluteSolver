@@ -41,9 +41,19 @@ impl HandGestureController {
     }
 
     /// 强制重置状态，供外部（main.rs）在检测不到手时调用
-    pub fn reset_state(&mut self) {
+    /// 【修改】现在会返回 HandEvent，以防在捏合状态下丢失手时能触发松开
+    pub fn reset_state(&mut self) -> HandEvent {
         self.base_angle = None;
+
+        // 关键逻辑：如果当前是捏合状态，突然丢失了手
+        // 必须返回 PinchEnd 强制松开鼠标，否则会卡在拖拽状态
+        if self.is_pinched {
+            self.is_pinched = false;
+            return HandEvent::PinchEnd;
+        }
+
         self.is_pinched = false;
+        HandEvent::None
     }
 
     pub fn is_pinched(&self) -> bool {
@@ -57,7 +67,7 @@ impl HandGestureController {
             return None;
         }
 
-        let track_indices = [0, 5, 9, 13, 17];
+        let track_indices = [0, 1, 17];
         let mut sum_x = 0.0;
         let mut sum_y = 0.0;
 

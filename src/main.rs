@@ -233,13 +233,15 @@ impl SolverApp {
                 }
             }
 
+            // ==========================================
             // B. 更新手势状态 (UI 和 点击控制都需要)
-            let mut current_hand_event = HandEvent::None;
-            if let Some((ref hand_landmarks, _)) = hand_result {
-                current_hand_event = self.gesture_controller.process(hand_landmarks);
+            // ==========================================
+            let current_hand_event = if let Some((ref hand_landmarks, _)) = hand_result {
+                self.gesture_controller.process(hand_landmarks)
             } else {
-                self.gesture_controller.reset_state();
-            }
+                // 如果手丢了，获取 reset_state 返回的事件 (PinchEnd)
+                self.gesture_controller.reset_state()
+            };
 
             // C. 核心追踪逻辑 (新功能: 支持头/手切换)
             let current_target_point = match self.config.mouse.track_mode {

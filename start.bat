@@ -5,4 +5,4 @@ set PATH=C:\Users\Feysen\scoop\apps\opencv\current\x64\vc16\bin;C:\Users\Feysen\
 set OpenCV_DIR=C:\Users\Feysen\scoop\apps\opencv\current\x64\vc16\lib
 set OPENCV_LINK_LIBS=opencv_world4120
 
-cargo build --release
+cargo run --release
