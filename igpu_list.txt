@@ -1,0 +1,5 @@
+Intel
+Iris
+UHD
+Xe
+Radeon Graphics

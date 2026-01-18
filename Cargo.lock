@@ -32,6 +32,8 @@ dependencies = [
  "rdev",
  "serde",
  "serde_yaml",
+ "winapi",
+ "windows 0.62.2",
  "winit",
 ]
 

@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 nalgebra = "0.34.1"
-ort = { version = "2.0.0-rc.11", features = ["ndarray", "copy-dylibs","directml", "cuda","openvino"] }
+ort = { version = "2.0.0-rc.11", features = ["ndarray", "copy-dylibs","directml", "cuda"] }
 opencv = { version = "0.98.1", default-features = false, features = ["videoio", "imgproc", "highgui","imgcodecs","calib3d"] }
 # 系统交互
 enigo = { version = "0.6.1", features = ["serde"] }
@@ -19,3 +19,12 @@ rdev = "0.5.3"
 
 # 【新增】用于获取屏幕逻辑分辨率
 winit = "0.30.12"
+winapi="0.3.9"
+
+# 【新增】Windows 原生 API 支持
+[dependencies.windows]
+version = "0.62.2"
+features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dxgi",
+]

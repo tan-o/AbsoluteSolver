@@ -1,4 +1,5 @@
-#![windows_subsystem = "windows"] // 【新增】隐藏Windows控制台窗口
+// src/main.rs
+#![windows_subsystem = "windows"] // 保持隐藏控制台窗口
 
 use anyhow::{Context, Result};
 use opencv::{
@@ -8,7 +9,7 @@ use opencv::{
     videoio,
 };
 use std::fs::File;
-use std::time::{Duration, Instant}; // 【恢复】Duration 用于 FPS 控制
+use std::time::{Duration, Instant};
 
 mod algorithms;
 mod config;
@@ -40,31 +41,27 @@ struct SolverApp {
 impl SolverApp {
     fn new(config_path: &str) -> Result<Self> {
         // ========================================================
-        // 【新增修复】根据配置动态决定是否弹出 CMD 调试黑框
+        // 动态调试窗口配置
         // ========================================================
         let file = File::open(config_path).context("无法打开配置文件")?;
         let config: Config = serde_yaml::from_reader(file).context("配置格式错误")?;
+
         if config.debug.show_debug_window {
             #[cfg(target_os = "windows")]
             unsafe {
-                // 调用 Windows API 分配控制台
                 extern "system" {
                     fn AllocConsole() -> i32;
                 }
                 AllocConsole();
-                // 这一点很重要：分配后需要重新绑定标准输出，否则 println! 可能还是不显示
-                // 但在 Rust 中，通常 AllocConsole 后直接 println! 就能生效
                 println!(">> [Debug] 调试窗口已开启");
             }
         }
         println!(">> [Init] 系统初始化中...");
+
         Self::setup_window(&config)?;
 
-        // let mut camera = videoio::VideoCapture::new(config.camera.index, videoio::CAP_ANY)?;
-        // 【修改后】指定使用 DirectShow (Windows)
         #[cfg(target_os = "windows")]
         let api_preference = videoio::CAP_MSMF;
-
         #[cfg(not(target_os = "windows"))]
         let api_preference = videoio::CAP_ANY;
 
@@ -107,11 +104,9 @@ impl SolverApp {
         highgui::named_window(&config.window.title, highgui::WINDOW_NORMAL)?;
         highgui::resize_window(&config.window.title, win_w, win_h)?;
 
-        // 【新增】如果配置了置顶，设置窗口置顶
         if config.debug.window_always_on_top {
             Self::set_window_always_on_top(&config.window.title)?;
         }
-
         Ok(())
     }
 
@@ -120,14 +115,12 @@ impl SolverApp {
         use std::ffi::OsStr;
         use std::os::windows::ffi::OsStrExt;
 
-        // 转换标题为 Wide 字符串
         let wide: Vec<u16> = OsStr::new(window_title)
             .encode_wide()
             .chain(std::iter::once(0))
             .collect();
 
         unsafe {
-            // 调用 Windows API SetWindowPos 将窗口设为置顶
             extern "system" {
                 fn FindWindowW(lpclass: *const u16, lpname: *const u16) -> *mut std::ffi::c_void;
                 fn SetWindowPos(
@@ -140,7 +133,6 @@ impl SolverApp {
                     uflags: u32,
                 ) -> i32;
             }
-
             const HWND_TOPMOST: *mut std::ffi::c_void = -1isize as *mut std::ffi::c_void;
             const SWP_NOMOVE: u32 = 0x0002;
             const SWP_NOSIZE: u32 = 0x0001;
@@ -155,8 +147,6 @@ impl SolverApp {
 
     #[cfg(not(target_os = "windows"))]
     fn set_window_always_on_top(_window_title: &str) -> Result<()> {
-        // 非 Windows 平台不实现置顶功能
-        eprintln!(">> [Warn] 窗口置顶功能仅在 Windows 平台支持");
         Ok(())
     }
 
@@ -172,151 +162,129 @@ impl SolverApp {
         let win_h = (self.config.camera.height as f64 * self.config.window.scale) as i32;
         let gui_size = Size::new(win_w, win_h);
 
-        // 【恢复】FPS 控制变量
         let active_fps = self.config.performance.active_fps as u64;
         let idle_fps = self.config.performance.idle_fps as u64;
-        let mut active_cooldown = 0; // 交互冷却帧数
+        let mut active_cooldown = 0;
         let overlap_threshold = self.config.algorithm.hand.overlap.unwrap_or(0.5);
 
-        // 【新增】实时FPS计算变量
         let mut frame_count = 0u32;
         let mut fps_timer = Instant::now();
         let mut real_fps = 0.0f32;
 
         loop {
-            // 【恢复】计时开始
             let start_time = Instant::now();
 
-            // 【新增】视频捕获错误处理和重连机制
+            // 1. 读取摄像头
             match self.camera.read(&mut frame) {
-                Ok(true) => {
-                    // 成功读取帧
-                }
+                Ok(true) => {}
                 Ok(false) => {
-                    // read() 返回 false 但未报错，通常表示流结束或暂时无法读取
-                    eprintln!(">> [Warn] 无法读取视频帧，尝试重新连接摄像头...");
-                    match self.reconnect_camera() {
-                        Ok(_) => {
-                            eprintln!(">> [Info] 摄像头重新连接成功");
-                            continue;
-                        }
-                        Err(e) => {
-                            eprintln!(">> [Error] 摄像头重连失败: {}", e);
-                            std::thread::sleep(Duration::from_millis(500));
-                            continue;
-                        }
+                    eprintln!(">> [Warn] 丢帧，尝试重连...");
+                    if let Err(_) = self.reconnect_camera() {
+                        std::thread::sleep(Duration::from_millis(500));
+                        continue;
                     }
                 }
                 Err(e) => {
-                    // read() 返回错误（如 MSMF 的 Error: -2147418113）
-                    eprintln!(
-                        ">> [Error] 视频捕获出错（通常是摄像头断开或驱动问题）: {}",
-                        e
-                    );
-                    match self.reconnect_camera() {
-                        Ok(_) => {
-                            eprintln!(">> [Info] 摄像头重新连接成功");
-                            continue;
-                        }
-                        Err(e) => {
-                            eprintln!(">> [Error] 摄像头重连失败: {}", e);
-                            std::thread::sleep(Duration::from_millis(500));
-                            continue;
-                        }
+                    eprintln!(">> [Error] 摄像头错误: {}", e);
+                    if let Err(_) = self.reconnect_camera() {
+                        std::thread::sleep(Duration::from_millis(500));
+                        continue;
                     }
                 }
             }
 
-            // 检查读取的帧是否有效
             if frame.size()?.width == 0 {
-                eprintln!(">> [Warn] 读取的帧无效（大小为0），跳过本帧");
                 continue;
             }
 
             let processed_frame = algorithms::auto_correct_exposure(&frame)?;
 
-            // 【优化】根据配置决定是否进行检测（节省CPU）
+            // 2. 推理检测 (始终执行)
             let mut hand_result = if self.config.algorithm.hand.enabled.unwrap_or(true) {
                 self.hand_pipeline.process(&processed_frame)?
             } else {
                 None
             };
+
             let face_result = if self.config.algorithm.face.enabled.unwrap_or(true) {
                 self.face_pipeline.process(&processed_frame)?
             } else {
                 None
             };
 
-            // ==========================================
-            // 逻辑处理
-            // ==========================================
-
-            // 1. 如果检测到人或者手，激活高 FPS 模式，否则进入休眠省电模式
+            // 激活高性能模式
             if hand_result.is_some() || face_result.is_some() {
-                active_cooldown = 60; // 保持 1秒 高性能
+                active_cooldown = 60;
             }
 
-            // 2. 总开关控制 (鼠标 & 手势)
-            if self.mouse_controller.enabled {
-                // 【恢复】手脸重叠剔除 (防止擦脸时误触)
-                if let Some((_, face_rect)) = face_result {
-                    if let Some((_, ref mut hand_rect)) = hand_result {
-                        let intersection = *hand_rect & face_rect;
-                        let intersect_area = intersection.area();
-                        let hand_area = hand_rect.area();
-                        if hand_area > 0 {
-                            let ratio = intersect_area as f32 / hand_area as f32;
-                            if ratio > overlap_threshold {
-                                // 重叠过大，丢弃手部数据
-                                hand_result = None;
-                            }
+            // ==========================================
+            // 核心逻辑 (解耦更新与控制)
+            // ==========================================
+
+            // A. 手脸重叠剔除 (始终执行，保证数据纯净)
+            if let Some((_, face_rect)) = face_result {
+                if let Some((_, ref mut hand_rect)) = hand_result {
+                    let intersection = *hand_rect & face_rect;
+                    let intersect_area = intersection.area();
+                    let hand_area = hand_rect.area();
+                    if hand_area > 0 {
+                        let ratio = intersect_area as f32 / hand_area as f32;
+                        if ratio > overlap_threshold {
+                            hand_result = None;
                         }
                     }
                 }
+            }
 
-                // 3. 手势处理
-                if let Some((ref hand_landmarks, _)) = hand_result {
-                    // 手存在时，正常处理
-                    match self.gesture_controller.process(hand_landmarks) {
-                        HandEvent::PinchStart => {
-                            let _ = self.mouse_controller.click_down();
-                        }
-                        HandEvent::PinchEnd => {
-                            let _ = self.mouse_controller.click_up();
-                        }
-                        HandEvent::RotateCW => {
-                            let _ = self.mouse_controller.scroll(-2);
-                        }
-                        HandEvent::RotateCCW => {
-                            let _ = self.mouse_controller.scroll(2);
-                        }
-                        HandEvent::None => {}
-                    }
-                } else {
-                    // 【新增】当检测不到手时，显式重置手势控制器状态
-                    // 这样下次手出现时，base_angle 就会重新从 None 开始计算
-                    self.gesture_controller.reset_state();
-                }
+            // B. 更新手势状态 (始终执行，这样 UI 才能显示捏合状态)
+            let mut current_hand_event = HandEvent::None;
+            if let Some((ref hand_landmarks, _)) = hand_result {
+                current_hand_event = self.gesture_controller.process(hand_landmarks);
+            } else {
+                self.gesture_controller.reset_state();
+            }
 
-                // 4. 头部鼠标处理
-                if let Some((ref landmarks, rect)) = face_result {
-                    self.last_valid_landmarks = Some(landmarks.clone());
-                    self.last_known_face_rect = Some((rect, Instant::now()));
+            // C. 更新头部追踪数据 (始终执行，这样 UI 才能一直显示黄点和面具)
+            if let Some((ref landmarks, rect)) = face_result {
+                self.last_valid_landmarks = Some(landmarks.clone());
+                self.last_known_face_rect = Some((rect, Instant::now()));
 
-                    if let Some((cx, cy)) = self.pose_solver.solve_centroid(landmarks) {
-                        self.last_valid_angles = Some((cx, cy));
+                if let Some((cx, cy)) = self.pose_solver.solve_centroid(landmarks) {
+                    self.last_valid_angles = Some((cx, cy));
+
+                    // D. 鼠标移动 (仅在 Enabled 时触发)
+                    if self.mouse_controller.enabled {
                         if let Err(e) = self.mouse_controller.update(cx, cy) {
-                            eprintln!(">> [Error] {}", e);
+                            eprintln!(">> [Error] Mouse update: {}", e);
                         }
                     }
                 }
             }
 
-            // 5. 快捷键
+            // E. 鼠标点击/滚动 (仅在 Enabled 时触发)
+            if self.mouse_controller.enabled {
+                match current_hand_event {
+                    HandEvent::PinchStart => {
+                        let _ = self.mouse_controller.click_down();
+                    }
+                    HandEvent::PinchEnd => {
+                        let _ = self.mouse_controller.click_up();
+                    }
+                    HandEvent::RotateCW => {
+                        let _ = self.mouse_controller.scroll(-2);
+                    }
+                    HandEvent::RotateCCW => {
+                        let _ = self.mouse_controller.scroll(2);
+                    }
+                    HandEvent::None => {}
+                }
+            }
+
+            // 4. 快捷键处理
             match self.input_manager.check_action() {
                 AppAction::ToggleMouse => self.mouse_controller.toggle(),
                 AppAction::ResetAnchor => {
-                    // 优先使用当前帧，否则使用缓存
+                    // 优先用当前帧，没有就用缓存
                     let l_opt = if let Some((ref l, _)) = face_result {
                         Some(l)
                     } else {
@@ -345,21 +313,20 @@ impl SolverApp {
             opencv::core::flip(&display_frame, &mut flipped_frame, 1)?;
             let win_scale = self.config.window.scale as f32;
 
-            // 绘制手
+            // 1. 绘制手
             if let Some((landmarks, rect)) = hand_result {
-                // 【修复】使用 _landmarks 消除警告，或者这里我们确实要画出来
                 let x = (rect.x as f32 * win_scale) as i32;
                 let y = (rect.y as f32 * win_scale) as i32;
                 let mirror_x = win_w - (x + (rect.width as f32 * win_scale) as i32);
 
-                let is_active =
-                    self.mouse_controller.enabled && self.gesture_controller.is_pinched();
-                let color = if is_active {
-                    Scalar::new(0.0, 0.0, 255.0, 0.0)
+                // 根据是否激活显示不同颜色
+                let is_pinched = self.gesture_controller.is_pinched();
+                let color = if self.mouse_controller.enabled && is_pinched {
+                    Scalar::new(0.0, 0.0, 255.0, 0.0) // 激活且捏合：红
                 } else if self.mouse_controller.enabled {
-                    Scalar::new(0.0, 255.0, 0.0, 0.0)
+                    Scalar::new(0.0, 255.0, 0.0, 0.0) // 激活未捏合：绿
                 } else {
-                    Scalar::new(100.0, 100.0, 100.0, 0.0)
+                    Scalar::new(100.0, 100.0, 100.0, 0.0) // 未激活：灰
                 };
 
                 imgproc::rectangle(
@@ -376,7 +343,6 @@ impl SolverApp {
                     0,
                 )?;
 
-                // 【修复】把骨架画出来，这样 landmarks 就被使用了，警告消除
                 for p in landmarks {
                     let px = win_w as f32 - (p[0] * win_scale);
                     let py = p[1] * win_scale;
@@ -391,7 +357,7 @@ impl SolverApp {
                     )?;
                 }
 
-                if is_active {
+                if is_pinched {
                     imgproc::put_text(
                         &mut flipped_frame,
                         "CLICK",
@@ -406,11 +372,11 @@ impl SolverApp {
                 }
             }
 
-            // 绘制脸部遮罩
-            if let Some((rect, _)) = self.last_known_face_rect {
-                if self.last_known_face_rect.unwrap().1.elapsed().as_millis() < 500 {
+            // 2. 绘制脸部 (使用 last_known_face_rect 实现平滑显示)
+            if let Some((rect, last_time)) = self.last_known_face_rect {
+                if last_time.elapsed().as_millis() < 500 {
                     if let Some(ref landmarks) = self.last_valid_landmarks {
-                        // 绘制实际使用的刚性特征点
+                        // 绘制特征点 (黄点)
                         let rigid_indices = HeadPoseSolver::get_rigid_landmark_indices();
                         for &idx in rigid_indices {
                             if let Some(p) = landmarks.get(idx) {
@@ -419,8 +385,8 @@ impl SolverApp {
                                 imgproc::circle(
                                     &mut flipped_frame,
                                     Point::new(px as i32, py as i32),
-                                    2,                                   // 特征点半径
-                                    Scalar::new(0.0, 255.0, 255.0, 0.0), // 黄色
+                                    2,
+                                    Scalar::new(0.0, 255.0, 255.0, 0.0), // 始终是黄色
                                     -1,
                                     8,
                                     0,
@@ -428,7 +394,7 @@ impl SolverApp {
                             }
                         }
 
-                        // 如果启用了虚拟头像，绘制头像
+                        // 绘制虚拟头像
                         if self.config.assets.scale > 0.0 {
                             if let (Some(nose), Some(leye), Some(reye)) =
                                 (landmarks.get(1), landmarks.get(33), landmarks.get(263))
@@ -467,14 +433,12 @@ impl SolverApp {
                 }
             }
 
-            // UI 信息
+            // UI 状态
             let current_fps = if active_cooldown > 0 {
                 active_fps
             } else {
                 idle_fps
             };
-
-            // 【修改】显示实时FPS而不是目标FPS
             let status = format!(
                 "FPS: {:.1} | Sys: {}",
                 real_fps,
@@ -495,86 +459,50 @@ impl SolverApp {
                 8,
                 false,
             )?;
-            // 【新增】在右下角显示推理设备
-            // 因为手和脸使用同一套 Config，所以设备是一样的，取手部 Pipeline 的名称即可
-            let device_text = format!("Device: {}", self.hand_pipeline.device_name);
 
+            // 显示设备
+            let device_text = format!("Device: {}", self.hand_pipeline.device_name);
             let mut baseline = 0;
             let text_size = imgproc::get_text_size(
                 &device_text,
                 imgproc::FONT_HERSHEY_SIMPLEX,
-                0.6, // 字号
-                2,   // 粗细
+                0.6,
+                2,
                 &mut baseline,
             )?;
-
-            // 计算右下角位置 (保留 10 像素边距)
-            let text_x = win_w - text_size.width - 10;
-            let text_y = win_h - 10;
-
             imgproc::put_text(
                 &mut flipped_frame,
                 &device_text,
-                Point::new(text_x, text_y),
+                Point::new(win_w - text_size.width - 10, win_h - 10),
                 imgproc::FONT_HERSHEY_SIMPLEX,
                 0.6,
-                Scalar::new(0.0, 255.0, 0.0, 0.0), // 绿色
+                Scalar::new(0.0, 255.0, 0.0, 0.0),
                 2,
                 8,
                 false,
             )?;
 
-            // ========================================================
-            // 【重点修改】窗口显示与退出逻辑
-            // ========================================================
-
-            // 1. 先显示图像
             highgui::imshow(&self.config.window.title, &flipped_frame)?;
 
-            // 2. 关键：处理按键事件（这也负责处理窗口的鼠标点击事件）
+            // 退出逻辑
             let key = highgui::wait_key(1)?;
             if key == 27 {
-                // ESC 键
+                break;
+            }
+            if let Ok(prop) =
+                highgui::get_window_property(&self.config.window.title, highgui::WND_PROP_AUTOSIZE)
+            {
+                if prop == -1.0 {
+                    break;
+                }
+            } else {
                 break;
             }
 
-            // 3. 【修复】检测窗口是否被点击 "X" 关闭
-            // get_window_property 需要窗口存在才能工作
-            // 如果窗口被关闭，WND_PROP_AUTOSIZE 获取通常会失败或返回 -1
-            // WND_PROP_VISIBLE 在某些 backend 下如果不准，可以用 try_catch 的思路
-            let prop_result = highgui::get_window_property(
-                &self.config.window.title,
-                highgui::WND_PROP_AUTOSIZE, // 检测窗口属性是否存在
-            );
-
-            match prop_result {
-                Ok(_) => {
-                    // 再次确认可见性 (双重保险)
-                    // 注意：在 OpenCV 某些版本中，关闭窗口后 get_window_property 可能会抛出错误
-                    // 所以这里的 match Ok/Err 结构本身就是一种检测
-                    if let Ok(visible) = highgui::get_window_property(
-                        &self.config.window.title,
-                        highgui::WND_PROP_VISIBLE,
-                    ) {
-                        if visible < 1.0 {
-                            println!(">> [Info] 窗口已关闭 (X)，退出程序。");
-                            break;
-                        }
-                    }
-                }
-                Err(_) => {
-                    // 如果获取属性直接报错，说明窗口句柄已经无效了（肯定是被关了）
-                    println!(">> [Info] 窗口句柄丢失，退出程序。");
-                    break;
-                }
-            }
-
-            // 【恢复】帧率控制逻辑
+            // FPS 控制
             if active_cooldown > 0 {
                 active_cooldown -= 1;
             }
-
-            // 【新增】实时FPS计算
             frame_count += 1;
             let elapsed_fps = fps_timer.elapsed();
             if elapsed_fps.as_millis() >= 1000 {
@@ -586,68 +514,64 @@ impl SolverApp {
             let elapsed = start_time.elapsed();
             let frame_duration = Duration::from_millis(1000 / current_fps);
             if frame_duration > elapsed {
-                // 如果处理太快，睡一会，降低 CPU 占用
                 std::thread::sleep(frame_duration - elapsed);
             }
         }
         Ok(())
     }
 
-    /// 重新连接摄像头
     fn reconnect_camera(&mut self) -> Result<()> {
         eprintln!(">> [Info] 正在断开并重新连接摄像头...");
-
-        // 关闭旧的摄像头连接
         let _ = self.camera.release();
-
-        // 稍作延迟，让驱动有时间释放资源
         std::thread::sleep(Duration::from_millis(1000));
 
-        // 尝试重新打开摄像头
         let max_retries = 3;
         for attempt in 1..=max_retries {
-            eprintln!(
-                ">> [Info] 尝试重新连接摄像头... (第 {}/{} 次)",
-                attempt, max_retries
-            );
-
+            eprintln!(">> [Info] 尝试重连... ({}/{})", attempt, max_retries);
             match videoio::VideoCapture::new(self.config.camera.index, videoio::CAP_ANY) {
                 Ok(mut new_camera) => {
-                    if let Ok(is_opened) = videoio::VideoCapture::is_opened(&new_camera) {
-                        if is_opened {
-                            // 设置摄像头属性
-                            let _ = new_camera.set(
-                                videoio::CAP_PROP_FRAME_WIDTH,
-                                self.config.camera.width as f64,
-                            );
-                            let _ = new_camera.set(
-                                videoio::CAP_PROP_FRAME_HEIGHT,
-                                self.config.camera.height as f64,
-                            );
-                            let _ = new_camera.set(videoio::CAP_PROP_FPS, 60.0);
-
-                            self.camera = new_camera;
-                            eprintln!(">> [Info] 摄像头成功重新连接！");
-                            return Ok(());
-                        }
+                    if let Ok(true) = videoio::VideoCapture::is_opened(&new_camera) {
+                        let _ = new_camera.set(
+                            videoio::CAP_PROP_FRAME_WIDTH,
+                            self.config.camera.width as f64,
+                        );
+                        let _ = new_camera.set(
+                            videoio::CAP_PROP_FRAME_HEIGHT,
+                            self.config.camera.height as f64,
+                        );
+                        let _ = new_camera.set(videoio::CAP_PROP_FPS, 60.0);
+                        self.camera = new_camera;
+                        eprintln!(">> [Info] 摄像头重连成功！");
+                        return Ok(());
                     }
                 }
-                Err(e) => {
-                    eprintln!(">> [Warn] 第 {} 次重连尝试失败: {}", attempt, e);
-                }
+                Err(e) => eprintln!(">> [Warn] 重连失败: {}", e),
             }
-
-            if attempt < max_retries {
-                std::thread::sleep(Duration::from_millis(500));
-            }
+            std::thread::sleep(Duration::from_millis(500));
         }
-
-        anyhow::bail!("经过多次尝试，无法重新连接摄像头")
+        anyhow::bail!("无法重新连接摄像头")
     }
 }
 
 fn main() -> Result<()> {
-    let mut app = SolverApp::new("config.yaml")?;
-    app.run()?;
-    Ok(())
+    // 捕获 Panic 并暂停，防止闪退
+    let result = (|| -> Result<()> {
+        let mut app = SolverApp::new("config.yaml")?;
+        app.run()?;
+        Ok(())
+    })();
+
+    if let Err(ref e) = result {
+        #[cfg(target_os = "windows")]
+        unsafe {
+            extern "system" {
+                fn AllocConsole() -> i32;
+            }
+            AllocConsole();
+        }
+        eprintln!("\n\n>> [FATAL ERROR] 程序崩溃: {:?}", e);
+        eprintln!(">> 按回车退出...");
+        let _ = std::io::stdin().read_line(&mut String::new());
+    }
+    result
 }

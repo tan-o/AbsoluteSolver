@@ -121,7 +121,7 @@ debug:
   # show_debug_window: 是否显示实时调试窗口
   #   - true: 显示原始帧 + 检测结果 (CPU占用高)
   #   - false: 隐藏调试窗口，只显示摄像头视图
-  show_debug_window: true
+  show_debug_window: false
 
   # window_always_on_top: 摄像头窗口是否置顶
   #   - true: 窗口始终在最前面
@@ -129,15 +129,12 @@ debug:
   window_always_on_top: true
 
 inference:
-  # device: 推理设备选择
-  #   - "auto": 优先尝试 Nvidia(CUDA) -> 核显(DirectML) -> CPU
-  #   - "gpu": 强制使用 GPU (cuda 或 directml)
-  #   - "cpu": 强制使用 CPU
-  #   - "openvino"
-  device: "cuda"
+  # 可选值:
+  #   "auto"  (推荐: 自动尝试 CUDA -> 独显 -> CPU)
+  #   "igpu"  (强制搜索核显并使用)
+  #   "gpu"   (强制使用主显卡/独显)
+  #   "cuda"  (强制使用 Nvidia CUDA)
+  #   "cpu"   (仅使用 CPU)
+  device: "igpu"
 
-  # cpu_threads: CPU 推理时的并行线程数
-  #   - 建议设置为物理核心数 (i7-1165G7 是 4 核 8 线程，建议设为 4)
-  #   - 只有当 device 最终回落到 CPU 时此项才生效
-  #   - 如果使用 GPU，此项影响较小但仍建议设为 2-4
   cpu_threads: 1
