@@ -50,6 +50,26 @@ impl HandGestureController {
         self.is_pinched
     }
 
+    /// 【新增】计算手掌核心区域的中心点 (用于鼠标追踪)
+    /// 追踪点：0, 5, 9, 13, 17
+    pub fn solve_palm_center(&self, landmarks: &Vec<[f32; 3]>) -> Option<(f64, f64)> {
+        if landmarks.len() < 21 {
+            return None;
+        }
+
+        let track_indices = [0, 5, 9, 13, 17];
+        let mut sum_x = 0.0;
+        let mut sum_y = 0.0;
+
+        for &idx in &track_indices {
+            sum_x += landmarks[idx][0] as f64;
+            sum_y += landmarks[idx][1] as f64;
+        }
+
+        let count = track_indices.len() as f64;
+        Some((sum_x / count, sum_y / count))
+    }
+
     pub fn process(&mut self, landmarks: &Vec<[f32; 3]>) -> HandEvent {
         // 1. 安全检查：如果点数不够，视为手丢失，重置状态
         if landmarks.len() < 21 {

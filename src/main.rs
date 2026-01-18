@@ -199,7 +199,7 @@ impl SolverApp {
 
             let processed_frame = algorithms::auto_correct_exposure(&frame)?;
 
-            // 2. 推理检测 (始终执行)
+            // 2. 推理检测
             let mut hand_result = if self.config.algorithm.hand.enabled.unwrap_or(true) {
                 self.hand_pipeline.process(&processed_frame)?
             } else {
@@ -212,31 +212,28 @@ impl SolverApp {
                 None
             };
 
-            // 激活高性能模式
             if hand_result.is_some() || face_result.is_some() {
                 active_cooldown = 60;
             }
 
             // ==========================================
-            // 核心逻辑 (解耦更新与控制)
+            // 核心逻辑
             // ==========================================
 
-            // A. 手脸重叠剔除 (始终执行，保证数据纯净)
+            // A. 手脸重叠剔除
             if let Some((_, face_rect)) = face_result {
                 if let Some((_, ref mut hand_rect)) = hand_result {
                     let intersection = *hand_rect & face_rect;
-                    let intersect_area = intersection.area();
-                    let hand_area = hand_rect.area();
-                    if hand_area > 0 {
-                        let ratio = intersect_area as f32 / hand_area as f32;
-                        if ratio > overlap_threshold {
-                            hand_result = None;
-                        }
+                    if hand_rect.area() > 0
+                        && (intersection.area() as f32 / hand_rect.area() as f32)
+                            > overlap_threshold
+                    {
+                        hand_result = None;
                     }
                 }
             }
 
-            // B. 更新手势状态 (始终执行，这样 UI 才能显示捏合状态)
+            // B. 更新手势状态 (UI 和 点击控制都需要)
             let mut current_hand_event = HandEvent::None;
             if let Some((ref hand_landmarks, _)) = hand_result {
                 current_hand_event = self.gesture_controller.process(hand_landmarks);
@@ -244,24 +241,30 @@ impl SolverApp {
                 self.gesture_controller.reset_state();
             }
 
-            // C. 更新头部追踪数据 (始终执行，这样 UI 才能一直显示黄点和面具)
-            if let Some((ref landmarks, rect)) = face_result {
-                self.last_valid_landmarks = Some(landmarks.clone());
-                self.last_known_face_rect = Some((rect, Instant::now()));
+            // C. 核心追踪逻辑 (新功能: 支持头/手切换)
+            let current_target_point = match self.config.mouse.track_mode {
+                config::MouseTrackMode::Hand => hand_result
+                    .as_ref()
+                    .and_then(|(l, _)| self.gesture_controller.solve_palm_center(l)),
+                config::MouseTrackMode::Head => face_result
+                    .as_ref()
+                    .and_then(|(l, _)| self.pose_solver.solve_centroid(l)),
+            };
 
-                if let Some((cx, cy)) = self.pose_solver.solve_centroid(landmarks) {
-                    self.last_valid_angles = Some((cx, cy));
-
-                    // D. 鼠标移动 (仅在 Enabled 时触发)
-                    if self.mouse_controller.enabled {
-                        if let Err(e) = self.mouse_controller.update(cx, cy) {
-                            eprintln!(">> [Error] Mouse update: {}", e);
-                        }
-                    }
+            if let Some((cx, cy)) = current_target_point {
+                self.last_valid_angles = Some((cx, cy));
+                if self.mouse_controller.enabled {
+                    let _ = self.mouse_controller.update(cx, cy);
                 }
             }
 
-            // E. 鼠标点击/滚动 (仅在 Enabled 时触发)
+            // D. UI 数据缓存更新
+            if let Some((ref landmarks, rect)) = face_result {
+                self.last_valid_landmarks = Some(landmarks.clone());
+                self.last_known_face_rect = Some((rect, Instant::now()));
+            }
+
+            // E. 鼠标交互
             if self.mouse_controller.enabled {
                 match current_hand_event {
                     HandEvent::PinchStart => {
@@ -276,27 +279,32 @@ impl SolverApp {
                     HandEvent::RotateCCW => {
                         let _ = self.mouse_controller.scroll(2);
                     }
-                    HandEvent::None => {}
+                    _ => {}
                 }
             }
 
-            // 4. 快捷键处理
+            // 4. 快捷键
             match self.input_manager.check_action() {
                 AppAction::ToggleMouse => self.mouse_controller.toggle(),
                 AppAction::ResetAnchor => {
-                    // 优先用当前帧，没有就用缓存
-                    let l_opt = if let Some((ref l, _)) = face_result {
-                        Some(l)
-                    } else {
-                        self.last_valid_landmarks.as_ref()
-                    };
-                    if let Some(l) = l_opt {
-                        if let Some((cx, cy)) = self.pose_solver.solve_centroid(l) {
-                            self.mouse_controller.reset_anchor(cx, cy);
+                    let reset_coord = match self.config.mouse.track_mode {
+                        config::MouseTrackMode::Hand => hand_result
+                            .as_ref()
+                            .and_then(|(l, _)| self.gesture_controller.solve_palm_center(l)),
+                        config::MouseTrackMode::Head => {
+                            let l_opt = if let Some((ref l, _)) = face_result {
+                                Some(l)
+                            } else {
+                                self.last_valid_landmarks.as_ref()
+                            };
+                            l_opt.and_then(|l| self.pose_solver.solve_centroid(l))
                         }
+                    };
+                    if let Some((cx, cy)) = reset_coord {
+                        self.mouse_controller.reset_anchor(cx, cy);
                     }
                 }
-                AppAction::None => {}
+                _ => {}
             }
 
             // ==========================================
@@ -313,13 +321,13 @@ impl SolverApp {
             opencv::core::flip(&display_frame, &mut flipped_frame, 1)?;
             let win_scale = self.config.window.scale as f32;
 
-            // 1. 绘制手
+            // 1. 绘制手 (【关键修复】恢复了捏合变色和文字显示的逻辑)
             if let Some((landmarks, rect)) = hand_result {
                 let x = (rect.x as f32 * win_scale) as i32;
                 let y = (rect.y as f32 * win_scale) as i32;
                 let mirror_x = win_w - (x + (rect.width as f32 * win_scale) as i32);
 
-                // 根据是否激活显示不同颜色
+                // 【恢复】调用 is_pinched，消除警告，并恢复视觉反馈
                 let is_pinched = self.gesture_controller.is_pinched();
                 let color = if self.mouse_controller.enabled && is_pinched {
                     Scalar::new(0.0, 0.0, 255.0, 0.0) // 激活且捏合：红
@@ -342,13 +350,13 @@ impl SolverApp {
                     8,
                     0,
                 )?;
-
                 for p in landmarks {
-                    let px = win_w as f32 - (p[0] * win_scale);
-                    let py = p[1] * win_scale;
                     imgproc::circle(
                         &mut flipped_frame,
-                        Point::new(px as i32, py as i32),
+                        Point::new(
+                            (win_w as f32 - p[0] * win_scale) as i32,
+                            (p[1] * win_scale) as i32,
+                        ),
                         2,
                         color,
                         -1,
@@ -357,6 +365,7 @@ impl SolverApp {
                     )?;
                 }
 
+                // 【恢复】捏合时显示 "CLICK"
                 if is_pinched {
                     imgproc::put_text(
                         &mut flipped_frame,
@@ -372,76 +381,70 @@ impl SolverApp {
                 }
             }
 
-            // 2. 绘制脸部 (使用 last_known_face_rect 实现平滑显示)
+            // 2. 绘制脸部与面具
             if let Some((rect, last_time)) = self.last_known_face_rect {
                 if last_time.elapsed().as_millis() < 500 {
                     if let Some(ref landmarks) = self.last_valid_landmarks {
-                        // 绘制特征点 (黄点)
-                        let rigid_indices = HeadPoseSolver::get_rigid_landmark_indices();
-                        for &idx in rigid_indices {
+                        for &idx in HeadPoseSolver::get_rigid_landmark_indices() {
                             if let Some(p) = landmarks.get(idx) {
-                                let px = win_w as f32 - (p[0] * win_scale);
-                                let py = p[1] * win_scale;
                                 imgproc::circle(
                                     &mut flipped_frame,
-                                    Point::new(px as i32, py as i32),
+                                    Point::new(
+                                        (win_w as f32 - p[0] * win_scale) as i32,
+                                        (p[1] * win_scale) as i32,
+                                    ),
                                     2,
-                                    Scalar::new(0.0, 255.0, 255.0, 0.0), // 始终是黄色
+                                    Scalar::new(0.0, 255.0, 255.0, 0.0),
                                     -1,
                                     8,
                                     0,
                                 )?;
                             }
                         }
-
-                        // 绘制虚拟头像
                         if self.config.assets.scale > 0.0 {
                             if let (Some(nose), Some(leye), Some(reye)) =
                                 (landmarks.get(1), landmarks.get(33), landmarks.get(263))
                             {
-                                let cx_global = (nose[0] + leye[0] + reye[0]) / 3.0;
-                                let cy_global = (nose[1] + leye[1] + reye[1]) / 3.0;
-                                let cx_gui = win_w as f32 - (cx_global * win_scale);
-                                let cy_gui = cy_global * win_scale;
                                 let face_w =
                                     rect.width as f32 * win_scale * self.config.assets.scale;
                                 let face_h =
                                     rect.height as f32 * win_scale * self.config.assets.scale;
-
-                                if face_w > 0.0 && face_h > 0.0 {
-                                    imgproc::resize(
-                                        &self.raw_face_mask,
-                                        &mut current_frame_mask,
-                                        Size::new(face_w as i32, face_h as i32),
-                                        0.0,
-                                        0.0,
-                                        imgproc::INTER_LINEAR,
-                                    )?;
-                                    let top_left = Point::new(
-                                        cx_gui as i32 - face_w as i32 / 2,
-                                        cy_gui as i32 - face_h as i32 / 2,
-                                    );
-                                    algorithms::overlay_image(
-                                        &mut flipped_frame,
-                                        &current_frame_mask,
-                                        top_left,
-                                    )?;
-                                }
+                                imgproc::resize(
+                                    &self.raw_face_mask,
+                                    &mut current_frame_mask,
+                                    Size::new(face_w as i32, face_h as i32),
+                                    0.0,
+                                    0.0,
+                                    imgproc::INTER_LINEAR,
+                                )?;
+                                let top_left = Point::new(
+                                    (win_w as f32
+                                        - ((nose[0] + leye[0] + reye[0]) / 3.0) * win_scale)
+                                        as i32
+                                        - face_w as i32 / 2,
+                                    ((nose[1] + leye[1] + reye[1]) / 3.0 * win_scale) as i32
+                                        - face_h as i32 / 2,
+                                );
+                                let _ = algorithms::overlay_image(
+                                    &mut flipped_frame,
+                                    &current_frame_mask,
+                                    top_left,
+                                );
                             }
                         }
                     }
                 }
             }
 
-            // UI 状态
-            let current_fps = if active_cooldown > 0 {
-                active_fps
-            } else {
-                idle_fps
-            };
+            // 3. UI 文本
             let status = format!(
-                "FPS: {:.1} | Sys: {}",
+                "FPS: {:.1} | Mode: {} | Sys: {}",
                 real_fps,
+                if self.config.mouse.track_mode == config::MouseTrackMode::Hand {
+                    "HAND"
+                } else {
+                    "HEAD"
+                },
                 if self.mouse_controller.enabled {
                     "ON"
                 } else {
@@ -460,7 +463,7 @@ impl SolverApp {
                 false,
             )?;
 
-            // 显示设备
+            // 【保留】设备信息显示 (避免 device_name 警告)
             let device_text = format!("Device: {}", self.hand_pipeline.device_name);
             let mut baseline = 0;
             let text_size = imgproc::get_text_size(
@@ -484,22 +487,18 @@ impl SolverApp {
 
             highgui::imshow(&self.config.window.title, &flipped_frame)?;
 
-            // 退出逻辑
             let key = highgui::wait_key(1)?;
-            if key == 27 {
-                break;
-            }
-            if let Ok(prop) =
-                highgui::get_window_property(&self.config.window.title, highgui::WND_PROP_AUTOSIZE)
+            if key == 27
+                || highgui::get_window_property(
+                    &self.config.window.title,
+                    highgui::WND_PROP_AUTOSIZE,
+                )
+                .unwrap_or(-1.0)
+                    == -1.0
             {
-                if prop == -1.0 {
-                    break;
-                }
-            } else {
                 break;
             }
 
-            // FPS 控制
             if active_cooldown > 0 {
                 active_cooldown -= 1;
             }
@@ -511,10 +510,15 @@ impl SolverApp {
                 fps_timer = Instant::now();
             }
 
-            let elapsed = start_time.elapsed();
-            let frame_duration = Duration::from_millis(1000 / current_fps);
-            if frame_duration > elapsed {
-                std::thread::sleep(frame_duration - elapsed);
+            let frame_duration = Duration::from_millis(
+                1000 / (if active_cooldown > 0 {
+                    active_fps
+                } else {
+                    idle_fps
+                }),
+            );
+            if frame_duration > start_time.elapsed() {
+                std::thread::sleep(frame_duration - start_time.elapsed());
             }
         }
         Ok(())

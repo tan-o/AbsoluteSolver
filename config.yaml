@@ -34,7 +34,7 @@ window:
 
 # 【新增】性能参数
 performance:
-  active_fps: 30 # 检测到手或脸时的帧率 (提升到60以获得最佳实时性)
+  active_fps: 30 # 检测到手或脸时的帧率
   idle_fps: 2 # 没人时的帧率 (建议 1 ~ 10，越低越省电)
 
 algorithm:
@@ -55,14 +55,16 @@ assets:
 
 mouse:
   enabled: true
+  track_mode: "hand" # 【新增】可选值: "head" 或 "hand"
   auto_screen_size: true
   manual_width: 1440.0
   manual_height: 900.0
 
   # 线性灵敏度: 头动 1 像素 = 鼠标动 X 像素
   # 【优化】增加灵敏度以提高跟随速度
+  # 如果改为跟踪手模式，建议在跟踪头模式的灵敏度的基础上减去9
   sensitivity_x: 15.0
-  sensitivity_y: 17.0 # Y轴通常稍微大一点方便卷动网页
+  sensitivity_y: 15.0
 
   # EMA 平滑系数 (0.01 ~ 1.0)
   # 【优化】增加平滑系数的值以减少延迟，但仍保持稳定
@@ -105,8 +107,6 @@ gesture:
   #   - 用于判断手相对于基准方向旋转了多少度才触发滚轮事件
   #   - 越小越灵敏，越容易触发滚轮
   #   - 推荐范围：30 ~ 60 度
-  #   - 如果反应太灵敏，增大到 50-60
-  #   - 如果反应不够灵敏，减小到 30-40
   rotation_threshold_degrees: 30
 
   # rotation_cooldown_ms: 旋转冷却时间（毫秒）
@@ -133,7 +133,7 @@ inference:
   #   "auto"  (推荐: 自动尝试 CUDA -> 独显 -> CPU)
   #   "igpu"  (强制搜索核显并使用)
   #   "gpu"   (强制使用主显卡/独显)
-  #   "cuda"  (强制使用 Nvidia CUDA)
+  #   "cuda"  (强制使用 Nvidia CUDA,使用cuda请自行下载cudnn)
   #   "cpu"   (仅使用 CPU)
   device: "igpu"
 
