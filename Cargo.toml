@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 nalgebra = "0.34.1"
-ort = { version = "2.0.0-rc.11", features = ["ndarray", "copy-dylibs","directml"] }
+ort = { version = "2.0.0-rc.11", features = ["ndarray", "copy-dylibs","directml", "cuda","openvino"] }
 opencv = { version = "0.98.1", default-features = false, features = ["videoio", "imgproc", "highgui","imgcodecs","calib3d"] }
 # 系统交互
 enigo = { version = "0.6.1", features = ["serde"] }

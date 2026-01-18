@@ -42,7 +42,7 @@ algorithm:
     enabled: true # 【新增】是否启用手部检测 (捏合/旋转手势)
     stability: 0.7
     threshold: 0.8
-    overlap: 0.9 # 手脸重叠屏蔽阈值
+    overlap: 1.0 # 手脸重叠屏蔽阈值
 
   face:
     enabled: true # 【新增】是否启用人脸检测 (头部鼠标控制)
@@ -51,7 +51,7 @@ algorithm:
 
 assets:
   avatar: "pictures/avatar.jpg"
-  scale: 1.2 # 建议 1.2 ~ 1.5，完全覆盖头部
+  scale: 0.7 # 建议 0.6 ~ 0.8，完全覆盖头部
 
 mouse:
   enabled: true
@@ -61,8 +61,8 @@ mouse:
 
   # 线性灵敏度: 头动 1 像素 = 鼠标动 X 像素
   # 【优化】增加灵敏度以提高跟随速度
-  sensitivity_x: 20.0
-  sensitivity_y: 25.0 # Y轴通常稍微大一点方便卷动网页
+  sensitivity_x: 15.0
+  sensitivity_y: 17.0 # Y轴通常稍微大一点方便卷动网页
 
   # EMA 平滑系数 (0.01 ~ 1.0)
   # 【优化】增加平滑系数的值以减少延迟，但仍保持稳定
@@ -93,12 +93,12 @@ gesture:
   #   - 越小越灵敏，越容易检测到捏合
   #   - 推荐范围：0.20 ~ 0.35
   #   - 如果反应慢，尝试降低到 0.20
-  pinch_threshold_on: 0.6
+  pinch_threshold_on: 0.4
 
   # pinch_threshold_off: 松开阈值 (必须 > pinch_threshold_on)
   #   - 防止抖动误触，应该显著大于 on 阈值
   #   - 推荐范围：0.50 ~ 0.70
-  pinch_threshold_off: 0.8
+  pinch_threshold_off: 0.5
 
   # 旋转检测参数
   # rotation_threshold_degrees: 旋转触发阈值（角度制，单位：度）
@@ -107,7 +107,7 @@ gesture:
   #   - 推荐范围：30 ~ 60 度
   #   - 如果反应太灵敏，增大到 50-60
   #   - 如果反应不够灵敏，减小到 30-40
-  rotation_threshold_degrees: 45.0
+  rotation_threshold_degrees: 30
 
   # rotation_cooldown_ms: 旋转冷却时间（毫秒）
   #   - 两次旋转事件之间的最小间隔
@@ -121,9 +121,23 @@ debug:
   # show_debug_window: 是否显示实时调试窗口
   #   - true: 显示原始帧 + 检测结果 (CPU占用高)
   #   - false: 隐藏调试窗口，只显示摄像头视图
-  show_debug_window: false
+  show_debug_window: true
 
   # window_always_on_top: 摄像头窗口是否置顶
   #   - true: 窗口始终在最前面
   #   - false: 窗口可被其他窗口遮挡
   window_always_on_top: true
+
+inference:
+  # device: 推理设备选择
+  #   - "auto": 优先尝试 Nvidia(CUDA) -> 核显(DirectML) -> CPU
+  #   - "gpu": 强制使用 GPU (cuda 或 directml)
+  #   - "cpu": 强制使用 CPU
+  #   - "openvino"
+  device: "cuda"
+
+  # cpu_threads: CPU 推理时的并行线程数
+  #   - 建议设置为物理核心数 (i7-1165G7 是 4 核 8 线程，建议设为 4)
+  #   - 只有当 device 最终回落到 CPU 时此项才生效
+  #   - 如果使用 GPU，此项影响较小但仍建议设为 2-4
+  cpu_threads: 1

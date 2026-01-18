@@ -20,6 +20,7 @@ pub struct Config {
     pub gesture: GestureConfig,
     // 【新增】调试配置
     pub debug: DebugConfig,
+    pub inference: InferenceConfig,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -107,4 +108,10 @@ pub struct DebugConfig {
     #[allow(dead_code)] // 【注】保留配置选项以便用户设置，即使不在代码中使用
     pub show_debug_window: bool, // 是否显示调试窗口
     pub window_always_on_top: bool, // 摄像头窗口是否置顶
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct InferenceConfig {
+    pub device: String,
+    pub cpu_threads: usize,
 }

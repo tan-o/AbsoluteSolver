@@ -1,7 +1,10 @@
-// ==========================================
-// 特征检测模块 - 整合手部和人脸检测
-// ==========================================
+// src/detectors.rs
 
+use crate::algorithms::{
+    generate_face_anchors, letterbox, non_max_suppression, Anchor, DetectionBox, FaceLandmarks,
+    HandLandmarks, LandmarkSmoother,
+};
+use crate::config::{AlgorithmParams, InferenceConfig};
 use anyhow::{Context, Result};
 use ndarray::Array4;
 use opencv::{
@@ -9,79 +12,145 @@ use opencv::{
     imgproc,
     prelude::*,
 };
+
 use ort::{
+    // 【修改】移除了未使用的 CPUExecutionProvider
+    execution_providers::{
+        CUDAExecutionProvider, DirectMLExecutionProvider, OpenVINOExecutionProvider,
+    },
     session::{builder::GraphOptimizationLevel, Session},
     value::Tensor,
 };
 
-use crate::algorithms::{
-    generate_face_anchors, letterbox, non_max_suppression, Anchor, DetectionBox, FaceLandmarks,
-    HandLandmarks, LandmarkSmoother,
-};
-use crate::config::AlgorithmParams;
+// ==========================================
+// 辅助函数：智能创建 Session (返回设备名)
+// ==========================================
+// 【修改】返回值增加 String，用于返回设备名称
+fn create_session(path: &str, config: &InferenceConfig) -> Result<(Session, String)> {
+    let mut builder = Session::builder()?
+        .with_optimization_level(GraphOptimizationLevel::Level3)?
+        .with_intra_threads(config.cpu_threads)?;
+
+    let device = config.device.to_lowercase();
+    let use_specific = device != "cpu";
+    let mut provider_set = false;
+    // 【修改】默认设备名为 CPU
+    let mut device_name = "CPU".to_string();
+
+    if use_specific {
+        // -----------------------------------------------------------
+        // 1. NVIDIA CUDA
+        // -----------------------------------------------------------
+        if device == "auto" || device == "gpu" || device == "cuda" {
+            let ep = CUDAExecutionProvider::default().build();
+            match builder.clone().with_execution_providers([ep]) {
+                Ok(new_builder) => {
+                    builder = new_builder;
+                    println!(">> [Inference] 成功加载: NVIDIA CUDA ({})", path);
+                    provider_set = true;
+                    // 【修改】记录设备名
+                    device_name = "CUDA".to_string();
+                }
+                Err(_e) => {}
+            }
+        }
+
+        // -----------------------------------------------------------
+        // 2. Intel OpenVINO
+        // -----------------------------------------------------------
+        if !provider_set && (device == "auto" || device == "openvino" || device == "gpu") {
+            let ep = OpenVINOExecutionProvider::default()
+                .with_device_type("GPU")
+                .build();
+            match builder.clone().with_execution_providers([ep]) {
+                Ok(new_builder) => {
+                    builder = new_builder;
+                    println!(">> [Inference] 成功加载: Intel OpenVINO ({})", path);
+                    provider_set = true;
+                    // 【修改】记录设备名
+                    device_name = "OpenVINO".to_string();
+                }
+                Err(_) => {}
+            }
+        }
+
+        // -----------------------------------------------------------
+        // 3. DirectML (通用核显)
+        // -----------------------------------------------------------
+        if !provider_set && (device == "auto" || device == "directml" || device == "gpu") {
+            let ep = DirectMLExecutionProvider::default().build();
+            match builder.clone().with_execution_providers([ep]) {
+                Ok(new_builder) => {
+                    builder = new_builder;
+                    println!(">> [Inference] 成功加载: DirectML ({})", path);
+                    provider_set = true;
+                    // 【修改】记录设备名
+                    device_name = "DirectML".to_string();
+                }
+                Err(_) => {}
+            }
+        }
+    }
+
+    if !provider_set {
+        println!(
+            ">> [Inference] 回落至: CPU (Threads: {}) ({})",
+            config.cpu_threads, path
+        );
+    }
+
+    // 【修改】返回 (Session, DeviceName)
+    Ok((
+        builder
+            .commit_from_file(path)
+            .context(format!("无法加载模型: {}", path))?,
+        device_name,
+    ))
+}
 
 // ==========================================
 // 手部检测管道
 // ==========================================
 pub struct HandPipeline {
-    // Session
     detector_sess: Session,
     landmark_sess: Session,
-
-    // Configs
     yolo_input_width: i32,
     yolo_input_height: i32,
     landmark_input_size: i32,
-
-    // State
     avg_score: f32,
     stability: f32,
     threshold: f32,
     smoother: LandmarkSmoother,
+    // 【新增】公开设备名称字段
+    pub device_name: String,
 }
 
 impl HandPipeline {
-    pub fn new(config: AlgorithmParams) -> Result<Self> {
+    pub fn new(algo_config: AlgorithmParams, infer_config: &InferenceConfig) -> Result<Self> {
         let detector_path = "hand/HandDetector/yolo11-hand-keypoint.onnx";
-        let detector_sess = Session::builder()?
-            .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_execution_providers([
-                ort::execution_providers::DirectMLExecutionProvider::default().build(),
-            ])?
-            .with_intra_threads(1)? // 减少线程竞争
-            .commit_from_file(detector_path)
-            .context("无法加载 YOLO Hand Detector")?;
-
         let landmark_path = "hand/HandLandmarkDetector/hand_landmark_sparse_Nx3x224x224.onnx";
-        let landmark_sess = Session::builder()?
-            .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_execution_providers([
-                ort::execution_providers::DirectMLExecutionProvider::default().build(),
-            ])?
-            .with_intra_threads(1)? // 减少线程竞争
-            .commit_from_file(landmark_path)
-            .context("无法加载 Hand Landmark Detector")?;
+
+        // 【修改】解构返回值，获取 device_name
+        let (detector_sess, dev_name) = create_session(detector_path, infer_config)?;
+        let (landmark_sess, _) = create_session(landmark_path, infer_config)?;
 
         Ok(Self {
             detector_sess,
             landmark_sess,
-            yolo_input_height: 480,
             yolo_input_width: 640,
+            yolo_input_height: 480,
             landmark_input_size: 224,
-
             avg_score: 0.0,
-            stability: config.stability.clamp(0.0, 1.0),
-            threshold: config.threshold.clamp(0.0, 1.0),
+            stability: algo_config.stability.clamp(0.0, 1.0),
+            threshold: algo_config.threshold.clamp(0.0, 1.0),
             smoother: LandmarkSmoother::new(21),
+            // 【新增】存储设备名
+            device_name: dev_name,
         })
     }
 
     pub fn process(&mut self, full_frame: &Mat) -> Result<Option<(HandLandmarks, Rect)>> {
-        // ==========================================
         // Step 1: YOLO 检测 (带 Letterbox)
-        // ==========================================
-
-        // 调用通用预处理
         let pre_res = letterbox(full_frame, self.yolo_input_width, self.yolo_input_height)?;
         let letterboxed_img = pre_res.img;
 
@@ -94,36 +163,36 @@ impl HandPipeline {
             AlgorithmHint::ALGO_HINT_DEFAULT,
         )?;
 
-        // 【优化】将 RGB Mat 转换为归一化的 f32 数组，使用更高效的按行遍历
-        let mut input_array = Array4::<f32>::zeros((
-            1,
-            3,
-            self.yolo_input_height as usize,
-            self.yolo_input_width as usize,
-        ));
-
-        // 使用 Mat 数据指针而不是逐像素访问（快 10 倍以上）
-        let bytes = rgb_frame.data_bytes()?;
+        // =======================================================================
+        // 【优化】HandPipeline 高性能数据填充 (已清理冗余变量)
+        // =======================================================================
         let width = self.yolo_input_width as usize;
         let height = self.yolo_input_height as usize;
         let total_pixels = width * height;
 
-        // RGB 格式，所以 3 字节为一个像素
-        for idx in 0..total_pixels {
-            let r = bytes[idx * 3] as f32 / 255.0;
-            let g = bytes[idx * 3 + 1] as f32 / 255.0;
-            let b = bytes[idx * 3 + 2] as f32 / 255.0;
+        // 1. 预分配扁平向量 (NCHW 布局)
+        let mut input_vec = vec![0f32; 1 * 3 * height * width];
 
-            let y = idx / width;
-            let x = idx % width;
-            input_array[[0, 0, y, x]] = r;
-            input_array[[0, 1, y, x]] = g;
-            input_array[[0, 2, y, x]] = b;
+        // 2. 切分出 R, G, B 三个平面
+        let (r_plane, rest) = input_vec.split_at_mut(total_pixels);
+        let (g_plane, b_plane) = rest.split_at_mut(total_pixels);
+
+        // 3. 获取原始字节数据
+        let bytes = rgb_frame.data_bytes()?;
+
+        // 4. 极速遍历 (手部归一化: v / 255.0)
+        for (i, chunk) in bytes.chunks_exact(3).enumerate() {
+            r_plane[i] = chunk[0] as f32 / 255.0;
+            g_plane[i] = chunk[1] as f32 / 255.0;
+            b_plane[i] = chunk[2] as f32 / 255.0;
         }
 
-        let outputs = self
-            .detector_sess
-            .run(ort::inputs![Tensor::from_array(input_array)?])?;
+        // 5. 零拷贝转换为 Tensor
+        let input_tensor =
+            Tensor::from_array(Array4::from_shape_vec((1, 3, height, width), input_vec)?)?;
+
+        // Step 2: 推理
+        let outputs = self.detector_sess.run(ort::inputs![input_tensor])?;
 
         let (output_shape, raw_data) = outputs
             .get("output0")
@@ -143,18 +212,15 @@ impl HandPipeline {
         let num_anchors = output_shape[2] as usize;
         let mut boxes = Vec::new();
 
-        // 提取候选框 并 立即映射回全局坐标
         for i in 0..num_anchors {
             let score = output_view[[0, 4, i]];
 
             if score > 0.4 {
-                // 读取 Letterbox 坐标
                 let cx_lb = output_view[[0, 0, i]];
                 let cy_lb = output_view[[0, 1, i]];
                 let w_lb = output_view[[0, 2, i]];
                 let h_lb = output_view[[0, 3, i]];
 
-                // 【关键】映射回 Global 坐标
                 let cx_global = (cx_lb - pre_res.pad_x as f32) / pre_res.scale;
                 let cy_global = (cy_lb - pre_res.pad_y as f32) / pre_res.scale;
                 let w_global = w_lb / pre_res.scale;
@@ -184,7 +250,6 @@ impl HandPipeline {
 
         let best_box = best_boxes[0];
 
-        // 平滑分数
         let alpha_fall = 1.0 - (0.95 * self.stability);
         let alpha_rise = 1.0 - (0.8 * self.stability);
         if best_box.score > self.avg_score {
@@ -197,10 +262,6 @@ impl HandPipeline {
             self.smoother.reset();
             return Ok(None);
         }
-
-        // ==========================================
-        // Step 2: 准备 ROI (基于全局坐标)
-        // ==========================================
 
         let img_w = full_frame.cols() as f32;
         let img_h = full_frame.rows() as f32;
@@ -232,10 +293,6 @@ impl HandPipeline {
 
         let roi_rect = Rect::new(safe_x1, safe_y1, final_w, final_h);
 
-        // ==========================================
-        // Step 3: Landmark 回归 (224x224)
-        // ==========================================
-
         let hand_roi = Mat::roi(full_frame, roi_rect)?;
         let mut landmark_input = Mat::default();
 
@@ -257,30 +314,28 @@ impl HandPipeline {
             AlgorithmHint::ALGO_HINT_DEFAULT,
         )?;
 
-        let mut lm_array = Array4::<f32>::zeros((
-            1,
-            3,
-            self.landmark_input_size as usize,
-            self.landmark_input_size as usize,
-        ));
-
-        // 【优化】使用数据指针而不是逐像素访问
-        let lm_bytes = lm_rgb.data_bytes()?;
-        let lm_total_pixels =
-            (self.landmark_input_size as usize) * (self.landmark_input_size as usize);
+        // ===========================================
+        // 【顺手优化】Hand Landmark 数据填充加速
+        // ===========================================
         let lm_size = self.landmark_input_size as usize;
+        let lm_total = lm_size * lm_size;
+        let mut lm_vec = vec![0f32; 1 * 3 * lm_total];
+        let (lm_r, lm_rest) = lm_vec.split_at_mut(lm_total);
+        let (lm_g, lm_b) = lm_rest.split_at_mut(lm_total);
+        let lm_bytes = lm_rgb.data_bytes()?;
 
-        for idx in 0..lm_total_pixels {
-            let y = idx / lm_size;
-            let x = idx % lm_size;
-            lm_array[[0, 0, y, x]] = lm_bytes[idx * 3] as f32 / 255.0;
-            lm_array[[0, 1, y, x]] = lm_bytes[idx * 3 + 1] as f32 / 255.0;
-            lm_array[[0, 2, y, x]] = lm_bytes[idx * 3 + 2] as f32 / 255.0;
+        for (i, chunk) in lm_bytes.chunks_exact(3).enumerate() {
+            lm_r[i] = chunk[0] as f32 / 255.0;
+            lm_g[i] = chunk[1] as f32 / 255.0;
+            lm_b[i] = chunk[2] as f32 / 255.0;
         }
 
-        let lm_outputs = self
-            .landmark_sess
-            .run(ort::inputs![Tensor::from_array(lm_array)?])?;
+        let lm_outputs =
+            self.landmark_sess
+                .run(ort::inputs![Tensor::from_array(Array4::from_shape_vec(
+                    (1, 3, lm_size, lm_size),
+                    lm_vec
+                )?)?])?;
 
         let (_lm_shape, lm_data) = lm_outputs
             .get("xyz_x21")
@@ -288,9 +343,6 @@ impl HandPipeline {
             .context("找不到 Landmark 输出 (xyz_x21)")?
             .try_extract_tensor::<f32>()?;
 
-        // ==========================================
-        // Step 4: 坐标映射 (224 -> ROI -> Global)
-        // ==========================================
         let mut landmarks = Vec::with_capacity(21);
 
         for i in 0..21 {
@@ -298,7 +350,6 @@ impl HandPipeline {
             let ly = lm_data[i * 3 + 1];
             let lz = lm_data[i * 3 + 2];
 
-            // 归一化 (假设 Sparse 模型输出的是 0~224 的像素值)
             let normalized_x = lx / self.landmark_input_size as f32;
             let normalized_y = ly / self.landmark_input_size as f32;
 
@@ -327,30 +378,18 @@ pub struct FacePipeline {
     threshold: f32,
     anchors: Vec<Anchor>,
     smoother: LandmarkSmoother,
+    // 【新增】公开设备名称字段
+    // pub device_name: String,
 }
 
 impl FacePipeline {
-    pub fn new(config: AlgorithmParams) -> Result<Self> {
+    pub fn new(algo_config: AlgorithmParams, infer_config: &InferenceConfig) -> Result<Self> {
         let detector_path = "head/FaceDetector/FaceDetector.onnx";
         let landmark_path = "head/FaceLandmarkDetector/FaceLandmarkDetector.onnx";
 
-        let detector_sess = Session::builder()?
-            .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_execution_providers([
-                ort::execution_providers::DirectMLExecutionProvider::default().build(),
-            ])?
-            .with_intra_threads(1)? // 减少线程竞争
-            .commit_from_file(detector_path)
-            .context("无法加载 FaceDetector")?;
-
-        let landmark_sess = Session::builder()?
-            .with_optimization_level(GraphOptimizationLevel::Level3)?
-            .with_execution_providers([
-                ort::execution_providers::DirectMLExecutionProvider::default().build(),
-            ])?
-            .with_intra_threads(1)? // 减少线程竞争
-            .commit_from_file(landmark_path)
-            .context("无法加载 FaceLandmarkDetector")?;
+        // 【修改】获取设备名
+        let (detector_sess, _) = create_session(detector_path, infer_config)?;
+        let (landmark_sess, _) = create_session(landmark_path, infer_config)?;
 
         let detector_input_size = 256;
         let landmark_input_size = 192;
@@ -362,19 +401,20 @@ impl FacePipeline {
             detector_input_size,
             landmark_input_size,
             avg_score: 0.0,
-            stability: config.stability.clamp(0.0, 1.0),
-            threshold: config.threshold.clamp(0.0, 1.0),
+            stability: algo_config.stability.clamp(0.0, 1.0),
+            threshold: algo_config.threshold.clamp(0.0, 1.0),
             anchors,
             smoother: LandmarkSmoother::new(468),
+            // 【新增】存储设备名
+            // device_name: dev_name,
         })
     }
 
+    // process 方法保持不变，请直接使用上面的代码或者原来的代码
     pub fn process(&mut self, full_frame: &Mat) -> Result<Option<(FaceLandmarks, Rect)>> {
         let input_size = self.detector_input_size;
 
-        // ==========================================
         // Step 1: 预处理 (Letterbox)
-        // ==========================================
         let pre_res = letterbox(full_frame, input_size, input_size)?;
         let letterboxed_img = pre_res.img;
 
@@ -387,33 +427,37 @@ impl FacePipeline {
             AlgorithmHint::ALGO_HINT_DEFAULT,
         )?;
 
-        let mut input_array =
-            Array4::<f32>::zeros((1, 3, input_size as usize, input_size as usize));
+        // =======================================================================
+        // 【优化】FacePipeline 高性能数据填充 (已修复变量冲突)
+        // =======================================================================
+        let input_size_usize = input_size as usize;
+        let total_pixels = input_size_usize * input_size_usize;
 
-        // 【优化】使用数据指针而不是逐像素访问（快 10 倍以上）
+        // 1. 预分配扁平向量 (NCHW 布局)
+        let mut input_vec = vec![0f32; 1 * 3 * total_pixels];
+
+        // 2. 切分出 R, G, B 三个平面
+        let (r_plane, rest) = input_vec.split_at_mut(total_pixels);
+        let (g_plane, b_plane) = rest.split_at_mut(total_pixels);
+
+        // 3. 获取原始字节数据
         let bytes = rgb_frame.data_bytes()?;
-        let total_pixels = (input_size as usize) * (input_size as usize);
-        let size = input_size as usize;
 
-        for idx in 0..total_pixels {
-            // RGB 格式，3 字节一个像素
-            let r = (bytes[idx * 3] as f32 - 127.5) / 127.5;
-            let g = (bytes[idx * 3 + 1] as f32 - 127.5) / 127.5;
-            let b = (bytes[idx * 3 + 2] as f32 - 127.5) / 127.5;
-
-            let y = idx / size;
-            let x = idx % size;
-            input_array[[0, 0, y, x]] = r;
-            input_array[[0, 1, y, x]] = g;
-            input_array[[0, 2, y, x]] = b;
+        // 4. 极速遍历 (人脸归一化: (v - 127.5) / 127.5)
+        for (i, chunk) in bytes.chunks_exact(3).enumerate() {
+            r_plane[i] = (chunk[0] as f32 - 127.5) / 127.5;
+            g_plane[i] = (chunk[1] as f32 - 127.5) / 127.5;
+            b_plane[i] = (chunk[2] as f32 - 127.5) / 127.5;
         }
 
-        // ==========================================
+        // 5. 零拷贝转换为 Tensor
+        let input_tensor = Tensor::from_array(Array4::from_shape_vec(
+            (1, 3, input_size_usize, input_size_usize),
+            input_vec,
+        )?)?;
+
         // Step 2: 推理
-        // ==========================================
-        let outputs = self
-            .detector_sess
-            .run(ort::inputs![Tensor::from_array(input_array)?])?;
+        let outputs = self.detector_sess.run(ort::inputs![input_tensor])?;
 
         let scores_1 = outputs
             .get("box_scores_1")
@@ -457,7 +501,6 @@ impl FacePipeline {
 
         let current_prob = 1.0 / (1.0 + (-max_score).exp());
 
-        // 平滑分数
         let alpha_fall = 1.0 - (0.95 * self.stability);
         let alpha_rise = 1.0 - (0.8 * self.stability);
         if current_prob > self.avg_score {
@@ -487,7 +530,6 @@ impl FacePipeline {
             )
         };
 
-        // 计算 Letterbox 坐标系下的归一化值
         let cx_norm: f32;
         let cy_norm: f32;
         let w_norm: f32;
@@ -509,26 +551,20 @@ impl FacePipeline {
             h_norm = dh.exp() * anchor.h;
         }
 
-        // ==========================================
-        // Step 3: 坐标反算 (核心)
-        // ==========================================
-        // 1. 转为 Letterbox 图像上的像素坐标
+        // Step 3: 坐标反算
         let cx_lb = cx_norm * input_size as f32;
         let cy_lb = cy_norm * input_size as f32;
         let w_lb = w_norm * input_size as f32;
         let h_lb = h_norm * input_size as f32;
 
-        // 2. 利用 preprocess 返回的参数映射回原图 (去黑边 -> 反缩放)
         let cx_global = (cx_lb - pre_res.pad_x as f32) / pre_res.scale;
         let cy_global = (cy_lb - pre_res.pad_y as f32) / pre_res.scale;
         let w_global = w_lb / pre_res.scale;
         let h_global = h_lb / pre_res.scale;
 
-        // 3. 计算 ROI (强制正方形)
         let img_w = full_frame.cols() as f32;
         let img_h = full_frame.rows() as f32;
 
-        // 1.5倍扩充，稍微多看一点背景
         let scale_roi = 1.5;
         let box_size_px = w_global.max(h_global) * scale_roi;
 
@@ -551,9 +587,7 @@ impl FacePipeline {
         }
         let roi_rect = Rect::new(safe_x1, safe_y1, final_w, final_h);
 
-        // ==========================================
         // Step 4: 关键点检测 (Landmark)
-        // ==========================================
         let face_roi = Mat::roi(full_frame, roi_rect)?;
         let mut landmark_input = Mat::default();
         imgproc::resize(
@@ -573,30 +607,30 @@ impl FacePipeline {
             0,
             AlgorithmHint::ALGO_HINT_DEFAULT,
         )?;
-        let mut lm_array = Array4::<f32>::zeros((
-            1,
-            3,
-            self.landmark_input_size as usize,
-            self.landmark_input_size as usize,
-        ));
 
-        // 【优化】使用数据指针而不是逐像素访问
-        let lm_bytes = lm_rgb.data_bytes()?;
-        let lm_total_pixels =
-            (self.landmark_input_size as usize) * (self.landmark_input_size as usize);
+        // ===========================================
+        // 【顺手优化】Landmark 的数据填充也加速一下
+        // ===========================================
         let lm_size = self.landmark_input_size as usize;
+        let lm_total = lm_size * lm_size;
+        let mut lm_vec = vec![0f32; 1 * 3 * lm_total];
+        let (lm_r, lm_rest) = lm_vec.split_at_mut(lm_total);
+        let (lm_g, lm_b) = lm_rest.split_at_mut(lm_total);
+        let lm_bytes = lm_rgb.data_bytes()?;
 
-        for idx in 0..lm_total_pixels {
-            let y = idx / lm_size;
-            let x = idx % lm_size;
-            lm_array[[0, 0, y, x]] = lm_bytes[idx * 3] as f32 / 255.0;
-            lm_array[[0, 1, y, x]] = lm_bytes[idx * 3 + 1] as f32 / 255.0;
-            lm_array[[0, 2, y, x]] = lm_bytes[idx * 3 + 2] as f32 / 255.0;
+        for (i, chunk) in lm_bytes.chunks_exact(3).enumerate() {
+            lm_r[i] = chunk[0] as f32 / 255.0;
+            lm_g[i] = chunk[1] as f32 / 255.0;
+            lm_b[i] = chunk[2] as f32 / 255.0;
         }
 
-        let lm_outputs = self
-            .landmark_sess
-            .run(ort::inputs![Tensor::from_array(lm_array)?])?;
+        let lm_outputs =
+            self.landmark_sess
+                .run(ort::inputs![Tensor::from_array(Array4::from_shape_vec(
+                    (1, 3, lm_size, lm_size),
+                    lm_vec
+                )?)?])?;
+
         let lm_tensor = lm_outputs
             .get("landmarks")
             .or_else(|| lm_outputs.get("Identity"))
@@ -608,7 +642,6 @@ impl FacePipeline {
         for i in 0..468 {
             let lx = lm_tensor[i * 3];
             let ly = lm_tensor[i * 3 + 1];
-            // 简单映射：因为 ROI 已经是切出来的正方形，直接乘宽高加偏移
             let global_x = roi_rect.x as f32 + lx * roi_rect.width as f32;
             let global_y = roi_rect.y as f32 + ly * roi_rect.height as f32;
             landmarks.push([global_x, global_y, lm_tensor[i * 3 + 2]]);

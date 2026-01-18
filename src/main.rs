@@ -77,8 +77,8 @@ impl SolverApp {
         camera.set(videoio::CAP_PROP_FRAME_HEIGHT, config.camera.height as f64)?;
         camera.set(videoio::CAP_PROP_FPS, 30.0)?;
 
-        let hand_pipeline = HandPipeline::new(config.algorithm.hand.clone())?;
-        let face_pipeline = FacePipeline::new(config.algorithm.face.clone())?;
+        let hand_pipeline = HandPipeline::new(config.algorithm.hand.clone(), &config.inference)?;
+        let face_pipeline = FacePipeline::new(config.algorithm.face.clone(), &config.inference)?;
         let mouse_controller = HeadMouseController::new(config.mouse.clone())?;
         let input_manager = InputManager::new(&config.shortcuts)?;
         let pose_solver = HeadPoseSolver::new(config.camera.width, config.camera.height)?;
@@ -491,6 +491,34 @@ impl SolverApp {
                 imgproc::FONT_HERSHEY_SIMPLEX,
                 0.6,
                 Scalar::new(0.0, 255.0, 0.0, 0.0),
+                2,
+                8,
+                false,
+            )?;
+            // 【新增】在右下角显示推理设备
+            // 因为手和脸使用同一套 Config，所以设备是一样的，取手部 Pipeline 的名称即可
+            let device_text = format!("Device: {}", self.hand_pipeline.device_name);
+
+            let mut baseline = 0;
+            let text_size = imgproc::get_text_size(
+                &device_text,
+                imgproc::FONT_HERSHEY_SIMPLEX,
+                0.6, // 字号
+                2,   // 粗细
+                &mut baseline,
+            )?;
+
+            // 计算右下角位置 (保留 10 像素边距)
+            let text_x = win_w - text_size.width - 10;
+            let text_y = win_h - 10;
+
+            imgproc::put_text(
+                &mut flipped_frame,
+                &device_text,
+                Point::new(text_x, text_y),
+                imgproc::FONT_HERSHEY_SIMPLEX,
+                0.6,
+                Scalar::new(0.0, 255.0, 0.0, 0.0), // 绿色
                 2,
                 8,
                 false,
