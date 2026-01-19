@@ -28,6 +28,7 @@ pub struct HandGestureController {
     last_rotation_time: Instant,
     base_angle: Option<f32>, // 基准角度
     config: GestureConfig,
+    pub rotation_state: i32,
 }
 
 impl HandGestureController {
@@ -37,6 +38,7 @@ impl HandGestureController {
             last_rotation_time: Instant::now(),
             base_angle: None,
             config,
+            rotation_state: 0, // 【新增】初始化
         }
     }
 
@@ -44,9 +46,9 @@ impl HandGestureController {
     /// 【修改】现在会返回 HandEvent，以防在捏合状态下丢失手时能触发松开
     pub fn reset_state(&mut self) -> HandEvent {
         self.base_angle = None;
-
-        // 关键逻辑：如果当前是捏合状态，突然丢失了手
-        // 必须返回 PinchEnd 强制松开鼠标，否则会卡在拖拽状态
+        self.rotation_state = 0; // 【新增】重置时归零
+                                 // 关键逻辑：如果当前是捏合状态，突然丢失了手
+                                 // 必须返回 PinchEnd 强制松开鼠标，否则会卡在拖拽状态
         if self.is_pinched {
             self.is_pinched = false;
             return HandEvent::PinchEnd;
@@ -167,7 +169,7 @@ impl HandGestureController {
         }
 
         // ============================================================
-        // 旋转检测 (Rotation) - 保持之前的逻辑
+        // 旋转检测 (Rotation)
         // ============================================================
         let (wrist_x, wrist_y) = p(0);
         let finger_indices = [9, 10, 11, 12];
@@ -181,9 +183,13 @@ impl HandGestureController {
         }
 
         let current_angle = sum_dy.atan2(sum_dx);
+
+        // 【保持相对模式】：以第一次检测到的角度为基准
         let base = *self.base_angle.get_or_insert(current_angle);
 
         let mut diff = current_angle - base;
+
+        // 角度归一化处理
         while diff > std::f32::consts::PI {
             diff -= 2.0 * std::f32::consts::PI;
         }
@@ -191,15 +197,31 @@ impl HandGestureController {
             diff += 2.0 * std::f32::consts::PI;
         }
 
-        if self.last_rotation_time.elapsed().as_millis() > self.config.rotation_cooldown_ms {
-            let threshold = self.config.rotation_threshold_degrees.to_radians();
+        let threshold = self.config.rotation_threshold_degrees.to_radians();
 
-            if diff > threshold {
+        // ============================================================
+        // 【核心修复】必须显式归零！
+        // ============================================================
+        if diff > threshold {
+            self.rotation_state = 1; // 顺时针
+        } else if diff < -threshold {
+            self.rotation_state = -1; // 逆时针
+        } else {
+            // 【漏掉的这行代码导致了不停滚动】
+            // 当手摆正（角度差小于阈值）时，必须把状态重置为 0
+            self.rotation_state = 0;
+        }
+
+        // 只有当状态不为 0 时，才检查冷却并触发事件
+        if self.rotation_state != 0 {
+            if self.last_rotation_time.elapsed().as_millis() > self.config.rotation_cooldown_ms {
                 self.last_rotation_time = Instant::now();
-                return HandEvent::RotateCW;
-            } else if diff < -threshold {
-                self.last_rotation_time = Instant::now();
-                return HandEvent::RotateCCW;
+
+                if self.rotation_state == 1 {
+                    return HandEvent::RotateCW;
+                } else {
+                    return HandEvent::RotateCCW;
+                }
             }
         }
 

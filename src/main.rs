@@ -287,26 +287,17 @@ impl SolverApp {
                 // 1. 默认状态 (普通模式)
                 next_overlay_state = overlay::STATE_NORMAL;
 
-                // 2. 根据手势覆盖状态
-                match current_hand_event {
-                    // 【关键修改】区分顺时针和逆时针滚动
-                    HandEvent::RotateCW => {
-                        next_overlay_state = overlay::STATE_SCROLL_CW; // 向下滚 -> 顺时针
-                    }
-                    HandEvent::RotateCCW => {
-                        next_overlay_state = overlay::STATE_SCROLL_CCW; // 向上滚 -> 逆时针
-                    }
-
-                    // 捏合 -> 点击/按住
-                    HandEvent::PinchStart | HandEvent::PinchEnd => {
-                        if self.gesture_controller.is_pinched() {
-                            next_overlay_state = overlay::STATE_CLICK_HOLD;
-                        }
-                    }
-                    _ => {
-                        // 保持捏合
-                        if self.gesture_controller.is_pinched() {
-                            next_overlay_state = overlay::STATE_CLICK_HOLD;
+                // 2. 优先检查捏合状态 (点击优先级最高)
+                if self.gesture_controller.is_pinched() {
+                    next_overlay_state = overlay::STATE_CLICK_HOLD;
+                }
+                // 3. 其次检查旋转状态 (直接读取 continuous state，不闪烁)
+                else {
+                    match self.gesture_controller.rotation_state {
+                        1 => next_overlay_state = overlay::STATE_SCROLL_CW,
+                        -1 => next_overlay_state = overlay::STATE_SCROLL_CCW,
+                        _ => {
+                            // 保持默认 NORMAL
                         }
                     }
                 }
