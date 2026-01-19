@@ -10,12 +10,16 @@ use opencv::{
 };
 use std::fs::File;
 use std::time::{Duration, Instant};
+// === ADD THESE LINES ===
+use std::sync::atomic::{AtomicI32, Ordering}; // Added AtomicI32
+use std::sync::Arc;
 
 mod algorithms;
 mod config;
 mod detectors;
 mod interaction;
-mod shortcuts;
+mod overlay;
+mod shortcuts; // 【新增】引入 overlay 模块
 
 use config::Config;
 use detectors::{FacePipeline, HandPipeline};
@@ -36,6 +40,7 @@ struct SolverApp {
     last_known_face_rect: Option<(Rect, Instant)>,
     last_valid_landmarks: Option<Vec<[f32; 3]>>,
     raw_face_mask: Mat,
+    mouse_state: Arc<AtomicI32>,
 }
 
 impl SolverApp {
@@ -82,6 +87,18 @@ impl SolverApp {
         let gesture_controller = HandGestureController::new(config.gesture.clone());
         let raw_face_mask = algorithms::load_and_prepare_mask(&config.assets.avatar)?;
 
+        // ========================================================
+        // 【修改】启动鼠标跟随图片 Overlay (传入更多参数)
+        // ========================================================
+        // 初始化状态为隐藏
+        let mouse_state = Arc::new(AtomicI32::new(overlay::STATE_HIDDEN));
+
+        // 启动 Overlay
+        if !config.assets.cursor_normal.is_empty() {
+            // 直接传入 config 对象引用和状态
+            overlay::spawn_mouse_overlay(&config.assets, mouse_state.clone())?;
+        }
+
         Ok(SolverApp {
             config,
             camera,
@@ -95,6 +112,7 @@ impl SolverApp {
             last_known_face_rect: None,
             last_valid_landmarks: None,
             raw_face_mask,
+            mouse_state, // 【新增】
         })
     }
 
@@ -259,6 +277,44 @@ impl SolverApp {
                     let _ = self.mouse_controller.update(cx, cy);
                 }
             }
+
+            // ==========================================
+            // 【修改】直接根据手势事件决定 Overlay 状态
+            // ==========================================
+            let mut next_overlay_state = overlay::STATE_HIDDEN;
+
+            if self.mouse_controller.enabled {
+                // 1. 默认状态 (普通模式)
+                next_overlay_state = overlay::STATE_NORMAL;
+
+                // 2. 根据手势覆盖状态
+                match current_hand_event {
+                    // 【关键修改】区分顺时针和逆时针滚动
+                    HandEvent::RotateCW => {
+                        next_overlay_state = overlay::STATE_SCROLL_CW; // 向下滚 -> 顺时针
+                    }
+                    HandEvent::RotateCCW => {
+                        next_overlay_state = overlay::STATE_SCROLL_CCW; // 向上滚 -> 逆时针
+                    }
+
+                    // 捏合 -> 点击/按住
+                    HandEvent::PinchStart | HandEvent::PinchEnd => {
+                        if self.gesture_controller.is_pinched() {
+                            next_overlay_state = overlay::STATE_CLICK_HOLD;
+                        }
+                    }
+                    _ => {
+                        // 保持捏合
+                        if self.gesture_controller.is_pinched() {
+                            next_overlay_state = overlay::STATE_CLICK_HOLD;
+                        }
+                    }
+                }
+            }
+
+            // 同步状态
+            self.mouse_state
+                .store(next_overlay_state, Ordering::Relaxed);
 
             // D. UI 数据缓存更新
             if let Some((ref landmarks, rect)) = face_result {

@@ -61,6 +61,17 @@ pub struct AlgorithmParams {
 pub struct AssetsConfig {
     pub avatar: String,
     pub scale: f32,
+    // 【新增】鼠标普通状态
+    pub cursor_normal: String,
+    pub cursor_scale_normal: f32,
+    // 【新增】鼠标滚动状态
+    pub cursor_scroll: String,
+    pub cursor_scale_scroll: f32,
+    // 【新增】文本编辑状态
+    pub cursor_text: String,
+    pub cursor_scale_text: f32,
+    // 【新增】旋转速度
+    pub rotation_speed: f32,
 }
 
 #[derive(Debug, Deserialize, Clone, PartialEq)]

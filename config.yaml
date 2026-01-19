@@ -52,10 +52,24 @@ algorithm:
 assets:
   avatar: "pictures/avatar.jpg"
   scale: 0.7 # 建议 0.6 ~ 0.8，完全覆盖头部
+  # 1. 普通状态图片 (旋转)
+  cursor_normal: "pictures/AbsoluteSolverTranslate.png"
+  cursor_scale_normal: 0.16 # 假设原图很大，这里缩小到0.3倍
+
+  # 2. 滚动模式图片 (旋转)
+  cursor_scroll: "pictures/AbsoluteSolverIconRotate.png"
+  cursor_scale_scroll: 0.1
+
+  # 3. 文本输入状态图片 (通常是竖线或 I 型，不旋转)
+  cursor_text: "pictures/AbsoluteSolverIconEdit.png"
+  cursor_scale_text: 0.1
+
+  # 旋转速度 (度/秒)
+  rotation_speed: 60.0
 
 mouse:
   enabled: true
-  track_mode: "hand" # 【新增】可选值: "head" 或 "hand"
+  track_mode: "head" # 【新增】可选值: "head" 或 "hand"
   auto_screen_size: true
   manual_width: 1440.0
   manual_height: 900.0
