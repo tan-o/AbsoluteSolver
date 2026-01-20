@@ -75,6 +75,7 @@ impl Default for AnchorPoint {
 // 资源路径配置
 #[derive(Debug, Deserialize, Clone)]
 pub struct AssetsConfig {
+    pub enable_overlay: bool,
     pub avatar: String,
     pub scale: f32,
     pub cursor_normal: String,

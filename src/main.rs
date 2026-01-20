@@ -107,14 +107,18 @@ impl SolverApp {
         // 初始化状态为隐藏
         let mouse_state = Arc::new(AtomicI32::new(overlay::STATE_HIDDEN));
 
-        // 启动 Overlay (传入共享坐标和虚拟模式配置)
-        if !config.assets.cursor_normal.is_empty() {
+        // 【修改点】启动 Overlay (增加 config.assets.enable_overlay 判断)
+        // 只有当 enable_overlay 为 true 且 图片路径不为空时，才创建窗口
+        if config.assets.enable_overlay && !config.assets.cursor_normal.is_empty() {
             overlay::spawn_mouse_overlay(
                 &config.assets,
                 mouse_state.clone(),
                 shared_coords.clone(),
                 config.mouse.virtual_cursor_mode,
             )?;
+            println!(">> [Overlay] 鼠标跟随窗口已启动");
+        } else {
+            println!(">> [Overlay] 鼠标跟随窗口已禁用");
         }
 
         Ok(SolverApp {
@@ -444,23 +448,9 @@ impl SolverApp {
             if let Some((rect, last_time)) = self.last_known_face_rect {
                 if last_time.elapsed().as_millis() < 500 {
                     if let Some(ref landmarks) = self.last_valid_landmarks {
-                        for &idx in HeadPoseSolver::get_rigid_landmark_indices() {
-                            if let Some(p) = landmarks.get(idx) {
-                                imgproc::circle(
-                                    &mut flipped_frame,
-                                    Point::new(
-                                        (win_w as f32 - p[0] * win_scale) as i32,
-                                        (p[1] * win_scale) as i32,
-                                    ),
-                                    2,
-                                    Scalar::new(0.0, 255.0, 255.0, 0.0),
-                                    -1,
-                                    8,
-                                    0,
-                                )?;
-                            }
-                        }
+                        // 【修改点】逻辑分流：如果 scale > 0 显示面具，否则显示特征点
                         if self.config.assets.scale > 0.0 {
+                            // === 分支 A: 绘制面具 (Avatar) ===
                             if let (Some(nose), Some(leye), Some(reye)) =
                                 (landmarks.get(1), landmarks.get(33), landmarks.get(263))
                             {
@@ -489,6 +479,24 @@ impl SolverApp {
                                     &current_frame_mask,
                                     top_left,
                                 );
+                            }
+                        } else {
+                            // === 分支 B: 绘制特征点 (仅当 scale <= 0 时) ===
+                            for &idx in HeadPoseSolver::get_rigid_landmark_indices() {
+                                if let Some(p) = landmarks.get(idx) {
+                                    imgproc::circle(
+                                        &mut flipped_frame,
+                                        Point::new(
+                                            (win_w as f32 - p[0] * win_scale) as i32,
+                                            (p[1] * win_scale) as i32,
+                                        ),
+                                        2,
+                                        Scalar::new(0.0, 255.0, 255.0, 0.0),
+                                        -1,
+                                        8,
+                                        0,
+                                    )?;
+                                }
                             }
                         }
                     }
