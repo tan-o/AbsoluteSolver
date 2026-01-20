@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::interaction::SharedCursorCoords;
 use windows::core::w;
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, SIZE, WPARAM};
 use windows::Win32::Graphics::Gdi::{
@@ -74,6 +75,8 @@ fn load_and_scale(path: &str, scale: f32) -> Result<Mat> {
 pub fn spawn_mouse_overlay(
     config: &crate::config::AssetsConfig,
     mouse_state: Arc<AtomicI32>,
+    shared_coords: Arc<SharedCursorCoords>,
+    is_virtual_mode: bool,
 ) -> Result<()> {
     // 1. 预加载图片
     let img_normal = load_and_scale(&config.cursor_normal, config.cursor_scale_normal)?;
@@ -295,11 +298,25 @@ pub fn spawn_mouse_overlay(
                     update_layered_window_raw(hwnd, data, win_size, win_size);
                 }
 
-                // 移动窗口
-                let mut p = POINT::default();
-                let _ = GetCursorPos(&mut p);
-                let x = p.x - (win_size / 2);
-                let y = p.y - (win_size / 2);
+                // ==========================================
+                // 【关键修改】决定窗口位置
+                // ==========================================
+                let (target_x, target_y) = if is_virtual_mode {
+                    // 模式A：虚拟模式，读取共享原子变量
+                    let vx = shared_coords.x.load(Ordering::Relaxed);
+                    let vy = shared_coords.y.load(Ordering::Relaxed);
+                    (vx, vy)
+                } else {
+                    // 模式B：普通模式，读取系统真实鼠标
+                    let mut p = POINT::default();
+                    let _ = GetCursorPos(&mut p);
+                    (p.x, p.y)
+                };
+
+                // 计算左上角位置（居中）
+                let x = target_x - (win_size / 2);
+                let y = target_y - (win_size / 2);
+
                 let _ = SetWindowPos(
                     hwnd,
                     Some(HWND_TOPMOST),

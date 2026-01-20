@@ -10,8 +10,8 @@ use opencv::{
 };
 use std::fs::File;
 use std::time::{Duration, Instant};
-// === ADD THESE LINES ===
-use std::sync::atomic::{AtomicI32, Ordering}; // Added AtomicI32
+// 引入必要的线程同步库
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Arc;
 
 mod algorithms;
@@ -19,11 +19,16 @@ mod config;
 mod detectors;
 mod interaction;
 mod overlay;
-mod shortcuts; // 【新增】引入 overlay 模块
+mod shortcuts;
 
 use config::Config;
 use detectors::{FacePipeline, HandPipeline};
-use interaction::{HandEvent, HandGestureController, HeadMouseController, HeadPoseSolver};
+
+// 合并了所有 interaction 模块的引用
+use interaction::{
+    HandEvent, HandGestureController, HeadMouseController, HeadPoseSolver, SharedCursorCoords,
+};
+
 use shortcuts::{AppAction, InputManager};
 
 struct SolverApp {
@@ -41,6 +46,8 @@ struct SolverApp {
     last_valid_landmarks: Option<Vec<[f32; 3]>>,
     raw_face_mask: Mat,
     mouse_state: Arc<AtomicI32>,
+    // 持有共享坐标引用
+    // shared_coords: Arc<SharedCursorCoords>,
 }
 
 impl SolverApp {
@@ -81,22 +88,33 @@ impl SolverApp {
 
         let hand_pipeline = HandPipeline::new(config.algorithm.hand.clone(), &config.inference)?;
         let face_pipeline = FacePipeline::new(config.algorithm.face.clone(), &config.inference)?;
-        let mouse_controller = HeadMouseController::new(config.mouse.clone())?;
+
+        // 初始化共享坐标
+        let shared_coords = Arc::new(SharedCursorCoords::new(0, 0));
+
+        // 初始化鼠标控制器 (传入 shared_coords)
+        let mouse_controller =
+            HeadMouseController::new(config.mouse.clone(), shared_coords.clone())?;
+
         let input_manager = InputManager::new(&config.shortcuts)?;
         let pose_solver = HeadPoseSolver::new(config.camera.width, config.camera.height)?;
         let gesture_controller = HandGestureController::new(config.gesture.clone());
         let raw_face_mask = algorithms::load_and_prepare_mask(&config.assets.avatar)?;
 
         // ========================================================
-        // 【修改】启动鼠标跟随图片 Overlay (传入更多参数)
+        // 启动鼠标 Overlay
         // ========================================================
         // 初始化状态为隐藏
         let mouse_state = Arc::new(AtomicI32::new(overlay::STATE_HIDDEN));
 
-        // 启动 Overlay
+        // 启动 Overlay (传入共享坐标和虚拟模式配置)
         if !config.assets.cursor_normal.is_empty() {
-            // 直接传入 config 对象引用和状态
-            overlay::spawn_mouse_overlay(&config.assets, mouse_state.clone())?;
+            overlay::spawn_mouse_overlay(
+                &config.assets,
+                mouse_state.clone(),
+                shared_coords.clone(),
+                config.mouse.virtual_cursor_mode,
+            )?;
         }
 
         Ok(SolverApp {
@@ -112,7 +130,8 @@ impl SolverApp {
             last_known_face_rect: None,
             last_valid_landmarks: None,
             raw_face_mask,
-            mouse_state, // 【新增】
+            mouse_state,
+            // shared_coords,
         })
     }
 
@@ -242,6 +261,7 @@ impl SolverApp {
             if let Some((_, face_rect)) = face_result {
                 if let Some((_, ref mut hand_rect)) = hand_result {
                     let intersection = *hand_rect & face_rect;
+                    // 【修复】area() 返回 i32，不能和 0.0 (f64) 比较，修改为 0
                     if hand_rect.area() > 0
                         && (intersection.area() as f32 / hand_rect.area() as f32)
                             > overlap_threshold
@@ -252,16 +272,15 @@ impl SolverApp {
             }
 
             // ==========================================
-            // B. 更新手势状态 (UI 和 点击控制都需要)
+            // B. 更新手势状态
             // ==========================================
             let current_hand_event = if let Some((ref hand_landmarks, _)) = hand_result {
                 self.gesture_controller.process(hand_landmarks)
             } else {
-                // 如果手丢了，获取 reset_state 返回的事件 (PinchEnd)
                 self.gesture_controller.reset_state()
             };
 
-            // C. 核心追踪逻辑 (新功能: 支持头/手切换)
+            // C. 核心追踪逻辑
             let current_target_point = match self.config.mouse.track_mode {
                 config::MouseTrackMode::Hand => hand_result
                     .as_ref()
@@ -279,31 +298,24 @@ impl SolverApp {
             }
 
             // ==========================================
-            // 【修改】直接根据手势事件决定 Overlay 状态
+            // 决定 Overlay 状态
             // ==========================================
             let mut next_overlay_state = overlay::STATE_HIDDEN;
 
             if self.mouse_controller.enabled {
-                // 1. 默认状态 (普通模式)
                 next_overlay_state = overlay::STATE_NORMAL;
 
-                // 2. 优先检查捏合状态 (点击优先级最高)
                 if self.gesture_controller.is_pinched() {
                     next_overlay_state = overlay::STATE_CLICK_HOLD;
-                }
-                // 3. 其次检查旋转状态 (直接读取 continuous state，不闪烁)
-                else {
+                } else {
                     match self.gesture_controller.rotation_state {
                         1 => next_overlay_state = overlay::STATE_SCROLL_CW,
                         -1 => next_overlay_state = overlay::STATE_SCROLL_CCW,
-                        _ => {
-                            // 保持默认 NORMAL
-                        }
+                        _ => {}
                     }
                 }
             }
 
-            // 同步状态
             self.mouse_state
                 .store(next_overlay_state, Ordering::Relaxed);
 
@@ -370,13 +382,12 @@ impl SolverApp {
             opencv::core::flip(&display_frame, &mut flipped_frame, 1)?;
             let win_scale = self.config.window.scale as f32;
 
-            // 1. 绘制手 (【关键修复】恢复了捏合变色和文字显示的逻辑)
+            // 1. 绘制手
             if let Some((landmarks, rect)) = hand_result {
                 let x = (rect.x as f32 * win_scale) as i32;
                 let y = (rect.y as f32 * win_scale) as i32;
                 let mirror_x = win_w - (x + (rect.width as f32 * win_scale) as i32);
 
-                // 【恢复】调用 is_pinched，消除警告，并恢复视觉反馈
                 let is_pinched = self.gesture_controller.is_pinched();
                 let color = if self.mouse_controller.enabled && is_pinched {
                     Scalar::new(0.0, 0.0, 255.0, 0.0) // 激活且捏合：红
@@ -414,7 +425,6 @@ impl SolverApp {
                     )?;
                 }
 
-                // 【恢复】捏合时显示 "CLICK"
                 if is_pinched {
                     imgproc::put_text(
                         &mut flipped_frame,
@@ -512,7 +522,6 @@ impl SolverApp {
                 false,
             )?;
 
-            // 【保留】设备信息显示 (避免 device_name 警告)
             let device_text = format!("Device: {}", self.hand_pipeline.device_name);
             let mut baseline = 0;
             let text_size = imgproc::get_text_size(

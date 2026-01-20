@@ -86,13 +86,14 @@ pub enum MouseTrackMode {
 pub struct MouseConfig {
     pub enabled: bool,
     pub track_mode: MouseTrackMode, // 【新增】追踪模式：head 或 hand
-    pub auto_screen_size: bool,     // 是否自动检测分辨率
-    pub manual_width: f64,          // 手动备选宽度
-    pub manual_height: f64,         // 手动备选高度
-    pub sensitivity_x: f32,         // X轴灵敏度 (建议 1.5 ~ 3.0)
-    pub sensitivity_y: f32,         // Y轴灵敏度
-    pub smoothing: f32,             // 平滑系数 (Beta值，越小越平滑但延迟越高)
-    pub dead_zone: f32,             // 中心死区 (像素)，防止微小抖动
+    pub virtual_cursor_mode: bool,
+    pub auto_screen_size: bool, // 是否自动检测分辨率
+    pub manual_width: f64,      // 手动备选宽度
+    pub manual_height: f64,     // 手动备选高度
+    pub sensitivity_x: f32,     // X轴灵敏度 (建议 1.5 ~ 3.0)
+    pub sensitivity_y: f32,     // Y轴灵敏度
+    pub smoothing: f32,         // 平滑系数 (Beta值，越小越平滑但延迟越高)
+    pub dead_zone: f32,         // 中心死区 (像素)，防止微小抖动
     // 【新增】
     pub invert_x: bool,
     pub invert_y: bool,

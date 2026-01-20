@@ -70,6 +70,10 @@ assets:
 mouse:
   enabled: true
   track_mode: "head" # 【新增】可选值: "head" 或 "hand"
+  # 【开启此选项】
+  # true: 只有图片会动，系统鼠标不动（除非点击时）
+  # false: 图片跟随系统鼠标
+  virtual_cursor_mode: false
   auto_screen_size: true
   manual_width: 1440.0
   manual_height: 900.0

@@ -1,3 +1,4 @@
+// src/interaction.rs
 // ==========================================
 // 交互模块 - 整合鼠标控制、手势检测、头部姿态
 // ==========================================
@@ -6,6 +7,9 @@ use crate::config::{GestureConfig, MouseConfig};
 use anyhow::Result;
 use enigo::{Axis, Button, Coordinate, Direction, Enigo, Mouse, Settings};
 use rdev::display_size;
+// 【Fix 1: Added missing imports】
+use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
 // ==========================================
@@ -26,7 +30,7 @@ pub enum HandEvent {
 pub struct HandGestureController {
     is_pinched: bool,
     last_rotation_time: Instant,
-    base_angle: Option<f32>, // 基准角度
+    base_angle: Option<f32>,
     config: GestureConfig,
     pub rotation_state: i32,
 }
@@ -38,17 +42,13 @@ impl HandGestureController {
             last_rotation_time: Instant::now(),
             base_angle: None,
             config,
-            rotation_state: 0, // 【新增】初始化
+            rotation_state: 0,
         }
     }
 
-    /// 强制重置状态，供外部（main.rs）在检测不到手时调用
-    /// 【修改】现在会返回 HandEvent，以防在捏合状态下丢失手时能触发松开
     pub fn reset_state(&mut self) -> HandEvent {
         self.base_angle = None;
-        self.rotation_state = 0; // 【新增】重置时归零
-                                 // 关键逻辑：如果当前是捏合状态，突然丢失了手
-                                 // 必须返回 PinchEnd 强制松开鼠标，否则会卡在拖拽状态
+        self.rotation_state = 0;
         if self.is_pinched {
             self.is_pinched = false;
             return HandEvent::PinchEnd;
@@ -62,8 +62,6 @@ impl HandGestureController {
         self.is_pinched
     }
 
-    /// 【新增】计算手掌核心区域的中心点 (用于鼠标追踪)
-    /// 追踪点：0, 5, 9, 13, 17
     pub fn solve_palm_center(&self, landmarks: &Vec<[f32; 3]>) -> Option<(f64, f64)> {
         if landmarks.len() < 21 {
             return None;
@@ -83,33 +81,22 @@ impl HandGestureController {
     }
 
     pub fn process(&mut self, landmarks: &Vec<[f32; 3]>) -> HandEvent {
-        // 1. 安全检查：如果点数不够，视为手丢失，重置状态
         if landmarks.len() < 21 {
             self.reset_state();
             return HandEvent::None;
         }
 
-        // 辅助函数
         let p = |i: usize| -> (f32, f32) { (landmarks[i][0], landmarks[i][1]) };
 
-        // ============================================================
-        // 【新算法】基于多指质心的几何捏合检测
-        // ============================================================
-
-        // 1. 计算参考尺度：手腕(0) 到 小指根部(17) 的距离
-        // 这个距离比 0-9 更稳定，因为动手指时 17 号点位移较小
         let (wx, wy) = p(0);
         let (px, py) = p(17);
         let scale_ref = ((wx - px).powi(2) + (wy - py).powi(2)).sqrt();
 
-        // 防止除以0或手太远
         if scale_ref < 1.0 {
             self.reset_state();
             return HandEvent::None;
         }
 
-        // 2. 计算 12 个手指关键点的“质心” (Centroid)
-        // 包含：食指(6,7,8), 中指(10,11,12), 无名指(14,15,16), 小指(18,19,20)
         let fingers_indices = [
             6, 7, 8, // Index
             10, 11, 12, // Middle
@@ -128,49 +115,34 @@ impl HandGestureController {
         let center_x = sum_x / 12.0;
         let center_y = sum_y / 12.0;
 
-        // 3. 计算 拇指尖(4) 到 这个质心 的距离
         let (thumb_x, thumb_y) = p(4);
         let dist_thumb_to_center =
             ((thumb_x - center_x).powi(2) + (thumb_y - center_y).powi(2)).sqrt();
 
-        // 4. 计算归一化比例 (无量纲)
         let ratio = dist_thumb_to_center / scale_ref;
 
-        // ============================================================
-        // 状态机判定 (无平滑，直接比较)
-        // ============================================================
         let mut event = HandEvent::None;
 
         if !self.is_pinched {
-            // 还没有捏合 -> 检测是否捏合
-            // 建议：由于计算方式变了，ratio 的值可能和以前不一样
-            // 你可能需要在 config.yaml 里微调 pinch_threshold_on
             if ratio < self.config.pinch_threshold_on {
                 self.is_pinched = true;
                 event = HandEvent::PinchStart;
             }
         } else {
-            // 已经捏合 -> 检测是否松开
-            // 使用 hysteresis (迟滞) 防止临界值抖动：松开阈值必须大于捏合阈值
             if ratio > self.config.pinch_threshold_off {
                 self.is_pinched = false;
                 event = HandEvent::PinchEnd;
             }
         }
 
-        // 如果触发了捏合事件，直接返回，不处理旋转
         if event != HandEvent::None {
             return event;
         }
 
-        // 如果处于捏合状态，也不处理旋转（防止拖拽时误触滚动）
         if self.is_pinched {
             return HandEvent::None;
         }
 
-        // ============================================================
-        // 旋转检测 (Rotation)
-        // ============================================================
         let (wrist_x, wrist_y) = p(0);
         let finger_indices = [9, 10, 11, 12];
         let mut sum_dx = 0.0;
@@ -183,13 +155,9 @@ impl HandGestureController {
         }
 
         let current_angle = sum_dy.atan2(sum_dx);
-
-        // 【保持相对模式】：以第一次检测到的角度为基准
         let base = *self.base_angle.get_or_insert(current_angle);
-
         let mut diff = current_angle - base;
 
-        // 角度归一化处理
         while diff > std::f32::consts::PI {
             diff -= 2.0 * std::f32::consts::PI;
         }
@@ -199,20 +167,14 @@ impl HandGestureController {
 
         let threshold = self.config.rotation_threshold_degrees.to_radians();
 
-        // ============================================================
-        // 【核心修复】必须显式归零！
-        // ============================================================
         if diff > threshold {
-            self.rotation_state = 1; // 顺时针
+            self.rotation_state = 1;
         } else if diff < -threshold {
-            self.rotation_state = -1; // 逆时针
+            self.rotation_state = -1;
         } else {
-            // 【漏掉的这行代码导致了不停滚动】
-            // 当手摆正（角度差小于阈值）时，必须把状态重置为 0
             self.rotation_state = 0;
         }
 
-        // 只有当状态不为 0 时，才检查冷却并触发事件
         if self.rotation_state != 0 {
             if self.last_rotation_time.elapsed().as_millis() > self.config.rotation_cooldown_ms {
                 self.last_rotation_time = Instant::now();
@@ -230,7 +192,7 @@ impl HandGestureController {
 }
 
 // ==========================================
-// 头部姿态求解器 (保持不变)
+// 头部姿态求解器
 // ==========================================
 pub struct HeadPoseSolver;
 
@@ -277,8 +239,24 @@ impl HeadPoseSolver {
 }
 
 // ==========================================
-// 鼠标控制器 (保持不变)
+// 鼠标控制器
 // ==========================================
+
+// 【Fix 2: Added SharedCursorCoords struct】
+pub struct SharedCursorCoords {
+    pub x: AtomicI32,
+    pub y: AtomicI32,
+}
+
+impl SharedCursorCoords {
+    pub fn new(x: i32, y: i32) -> Self {
+        Self {
+            x: AtomicI32::new(x),
+            y: AtomicI32::new(y),
+        }
+    }
+}
+
 #[derive(Clone, Copy)]
 struct Point2D {
     x: f64,
@@ -294,10 +272,13 @@ pub struct HeadMouseController {
     anchor: Option<Point2D>,
     filtered_pos: Point2D,
     cursor_pos: Point2D,
+    // 【Fix 3: Added shared_coords field】
+    pub shared_coords: Arc<SharedCursorCoords>,
 }
 
 impl HeadMouseController {
-    pub fn new(config: MouseConfig) -> Result<Self> {
+    // 【Fix 4: Updated new() to accept shared_coords】
+    pub fn new(config: MouseConfig, shared_coords: Arc<SharedCursorCoords>) -> Result<Self> {
         let (sw, sh) = if config.auto_screen_size {
             let (w, h) =
                 display_size().unwrap_or((config.manual_width as u64, config.manual_height as u64));
@@ -324,6 +305,7 @@ impl HeadMouseController {
                 x: sw / 2.0,
                 y: sh / 2.0,
             },
+            shared_coords,
         })
     }
 
@@ -339,9 +321,20 @@ impl HeadMouseController {
             x: center_x,
             y: center_y,
         };
-        let _ = self
-            .enigo
-            .move_mouse(center_x as i32, center_y as i32, Coordinate::Abs);
+        // Resetting to center also updates the shared coords
+        self.shared_coords
+            .x
+            .store(center_x as i32, Ordering::Relaxed);
+        self.shared_coords
+            .y
+            .store(center_y as i32, Ordering::Relaxed);
+
+        if !self.config.virtual_cursor_mode {
+            let _ = self
+                .enigo
+                .move_mouse(center_x as i32, center_y as i32, Coordinate::Abs);
+        }
+
         println!(">> [Mouse] Reset Center: ({:.1}, {:.1})", cx, cy);
     }
 
@@ -350,6 +343,7 @@ impl HeadMouseController {
         println!(">> [Mouse] Enabled: {}", self.enabled);
     }
 
+    // 【Fix 5: Updated update logic】
     pub fn update(&mut self, cx: f64, cy: f64) -> Result<()> {
         if !self.enabled || !self.config.enabled {
             return Ok(());
@@ -391,13 +385,37 @@ impl HeadMouseController {
         let final_x = self.cursor_pos.x.clamp(0.0, self.screen_width);
         let final_y = self.cursor_pos.y.clamp(0.0, self.screen_height);
 
-        let _ = self
-            .enigo
-            .move_mouse(final_x as i32, final_y as i32, Coordinate::Abs);
+        // Update shared atomic coordinates
+        self.shared_coords
+            .x
+            .store(final_x as i32, Ordering::Relaxed);
+        self.shared_coords
+            .y
+            .store(final_y as i32, Ordering::Relaxed);
+
+        // Only move system mouse if NOT in virtual mode
+        if !self.config.virtual_cursor_mode {
+            let _ = self
+                .enigo
+                .move_mouse(final_x as i32, final_y as i32, Coordinate::Abs);
+        }
         Ok(())
     }
 
+    // 【Fix 6: Added sync helper】
+    fn sync_system_mouse(&mut self) -> Result<()> {
+        let x = self.shared_coords.x.load(Ordering::Relaxed);
+        let y = self.shared_coords.y.load(Ordering::Relaxed);
+        self.enigo
+            .move_mouse(x, y, Coordinate::Abs)
+            .map_err(|e| anyhow::anyhow!("{:?}", e))
+    }
+
+    // 【Fix 7: Updated click/scroll methods (Removed duplicates)】
     pub fn click_down(&mut self) -> Result<()> {
+        if self.config.virtual_cursor_mode {
+            self.sync_system_mouse()?;
+        }
         self.enigo
             .button(Button::Left, Direction::Press)
             .map_err(|e| anyhow::anyhow!("{:?}", e))
@@ -410,6 +428,9 @@ impl HeadMouseController {
     }
 
     pub fn scroll(&mut self, y: i32) -> Result<()> {
+        if self.config.virtual_cursor_mode {
+            self.sync_system_mouse()?;
+        }
         self.enigo
             .scroll(y, Axis::Vertical)
             .map_err(|e| anyhow::anyhow!("{:?}", e))
