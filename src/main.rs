@@ -23,6 +23,10 @@ mod shortcuts;
 
 use config::Config;
 use detectors::{FacePipeline, HandPipeline};
+// 引入新的算法函数
+use algorithms::{
+    calculate_circumradius, calculate_hand_angle, draw_rotated_image, load_and_prepare_mask,
+};
 
 // 合并了所有 interaction 模块的引用
 use interaction::{
@@ -48,6 +52,9 @@ struct SolverApp {
     mouse_state: Arc<AtomicI32>,
     // 持有共享坐标引用
     // shared_coords: Arc<SharedCursorCoords>,
+    // 【新增】缓存的手部图标
+    hand_img_normal: Mat,
+    hand_img_scroll: Mat,
 }
 
 // 【新增】引入 TrayIconEvent 用于监听左键点击
@@ -301,6 +308,20 @@ impl SolverApp {
         let gesture_controller = HandGestureController::new(config.gesture.clone());
         let raw_face_mask = algorithms::load_and_prepare_mask(&config.assets.avatar)?;
 
+        // 【新增】预加载手部图片 (复用 assets 配置)
+        // 注意：这里我们加载原图，不缩放，缩放在绘制时根据手的大小动态进行
+        let hand_img_normal = if !config.assets.cursor_normal.is_empty() {
+            load_and_prepare_mask(&config.assets.cursor_normal).unwrap_or(Mat::default())
+        } else {
+            Mat::default()
+        };
+
+        let hand_img_scroll = if !config.assets.cursor_scroll.is_empty() {
+            load_and_prepare_mask(&config.assets.cursor_scroll).unwrap_or(Mat::default())
+        } else {
+            Mat::default()
+        };
+
         // ========================================================
         // 启动鼠标 Overlay
         // ========================================================
@@ -336,6 +357,8 @@ impl SolverApp {
             raw_face_mask,
             mouse_state,
             // shared_coords,
+            hand_img_normal, // 初始化字段
+            hand_img_scroll, // 初始化字段
         })
     }
 
@@ -573,7 +596,7 @@ impl SolverApp {
             }
 
             // ==========================================
-            // 渲染绘制
+            // 渲染绘制 (重点修改这里)
             // ==========================================
             imgproc::resize(
                 &processed_frame,
@@ -588,59 +611,127 @@ impl SolverApp {
 
             // 1. 绘制手
             if let Some((landmarks, rect)) = hand_result {
-                let x = (rect.x as f32 * win_scale) as i32;
-                let y = (rect.y as f32 * win_scale) as i32;
-                let mirror_x = win_w - (x + (rect.width as f32 * win_scale) as i32);
+                let is_sync_style = self.config.assets.sync_hand_style;
 
-                let is_pinched = self.gesture_controller.is_pinched();
-                let color = if self.mouse_controller.enabled && is_pinched {
-                    Scalar::new(0.0, 0.0, 255.0, 0.0) // 激活且捏合：红
-                } else if self.mouse_controller.enabled {
-                    Scalar::new(0.0, 255.0, 0.0, 0.0) // 激活未捏合：绿
+                if is_sync_style {
+                    // === 模式 A: 显示跟随手势的图片 (图片模式) ===
+
+                    if landmarks.len() > 17 {
+                        // 坐标转换闭包
+                        let transform = |p: [f32; 3]| -> Point {
+                            Point::new(
+                                (win_w as f32 - p[0] * win_scale) as i32,
+                                (p[1] * win_scale) as i32,
+                            )
+                        };
+
+                        let win_p0 = transform(landmarks[0]); // 手腕
+                        let win_p1 = transform(landmarks[1]); // 拇指根
+                        let win_p9 = transform(landmarks[9]); // 中指根 (新的跟踪中心)
+                        let win_p17 = transform(landmarks[17]); // 小指根
+
+                        // [修改 1] 跟踪中心：只跟踪 Point 9
+                        let img_center = win_p9;
+
+                        // [修改 2] 尺寸计算：依然使用外接圆来决定大小，保持大小自适应的稳定性
+                        let radius = calculate_circumradius(
+                            [win_p0.x as f32, win_p0.y as f32, 0.0],
+                            [win_p1.x as f32, win_p1.y as f32, 0.0],
+                            [win_p17.x as f32, win_p17.y as f32, 0.0],
+                        );
+
+                        let mut base_size =
+                            (radius * 2.0 * self.config.assets.hand_style_scale) as i32;
+
+                        // [新增功能] 捏合时放大
+                        if self.gesture_controller.is_pinched() {
+                            base_size = (base_size as f32 * 1.25) as i32;
+                        }
+
+                        // [修改 3] 角度计算与方向修正
+                        // 注意：因为画面是镜像(flip)过的，向量计算要小心
+                        // 我们直接用屏幕上的点 win_p0 和 win_p9 算角度
+                        let raw_angle = calculate_hand_angle(win_p0, win_p9);
+
+                        // [关键修正] 手的转动方向和图片反了 -> 取反角度
+                        // 另外通常素材图片是竖直朝上的，可能需要 +90 度或 -90 度校准
+                        // 根据你的反馈，这里先加一个负号。如果发现相差90度，请在 -raw_angle 后 +90 或 -90
+                        let final_angle = -raw_angle - 90.0;
+
+                        // 决定使用哪张图
+                        let img_to_draw = match self.gesture_controller.rotation_state {
+                            1 | -1 => &self.hand_img_scroll,
+                            _ => &self.hand_img_normal,
+                        };
+
+                        // 绘制
+                        if base_size > 0 {
+                            let _ = draw_rotated_image(
+                                &mut flipped_frame,
+                                img_to_draw,
+                                img_center,
+                                base_size,
+                                final_angle,
+                            );
+                        }
+                    }
                 } else {
-                    Scalar::new(100.0, 100.0, 100.0, 0.0) // 未激活：灰
-                };
+                    // === 模式 B: 原始调试框 (保持不变) ===
+                    let x = (rect.x as f32 * win_scale) as i32;
+                    let y = (rect.y as f32 * win_scale) as i32;
+                    let mirror_x = win_w - (x + (rect.width as f32 * win_scale) as i32);
 
-                imgproc::rectangle(
-                    &mut flipped_frame,
-                    Rect::new(
-                        mirror_x,
-                        y,
-                        (rect.width as f32 * win_scale) as i32,
-                        (rect.height as f32 * win_scale) as i32,
-                    ),
-                    color,
-                    2,
-                    8,
-                    0,
-                )?;
-                for p in landmarks {
-                    imgproc::circle(
+                    let is_pinched = self.gesture_controller.is_pinched();
+                    let color = if self.mouse_controller.enabled && is_pinched {
+                        Scalar::new(0.0, 0.0, 255.0, 0.0)
+                    } else if self.mouse_controller.enabled {
+                        Scalar::new(0.0, 255.0, 0.0, 0.0)
+                    } else {
+                        Scalar::new(100.0, 100.0, 100.0, 0.0)
+                    };
+
+                    imgproc::rectangle(
                         &mut flipped_frame,
-                        Point::new(
-                            (win_w as f32 - p[0] * win_scale) as i32,
-                            (p[1] * win_scale) as i32,
+                        Rect::new(
+                            mirror_x,
+                            y,
+                            (rect.width as f32 * win_scale) as i32,
+                            (rect.height as f32 * win_scale) as i32,
                         ),
-                        2,
                         color,
-                        -1,
+                        2,
                         8,
                         0,
                     )?;
-                }
 
-                if is_pinched {
-                    imgproc::put_text(
-                        &mut flipped_frame,
-                        "CLICK",
-                        Point::new(mirror_x, y - 5),
-                        imgproc::FONT_HERSHEY_SIMPLEX,
-                        0.8,
-                        color,
-                        2,
-                        8,
-                        false,
-                    )?;
+                    // [修正警告] 只绘制关键点，不计算未使用的 dist_sq
+                    for p in landmarks {
+                        imgproc::circle(
+                            &mut flipped_frame,
+                            Point::new(
+                                (win_w as f32 - p[0] * win_scale) as i32,
+                                (p[1] * win_scale) as i32,
+                            ),
+                            2,
+                            color,
+                            -1,
+                            8,
+                            0,
+                        )?;
+                    }
+                    if is_pinched {
+                        imgproc::put_text(
+                            &mut flipped_frame,
+                            "CLICK",
+                            Point::new(mirror_x, y - 5),
+                            imgproc::FONT_HERSHEY_SIMPLEX,
+                            0.8,
+                            color,
+                            2,
+                            8,
+                            false,
+                        )?;
+                    }
                 }
             }
 

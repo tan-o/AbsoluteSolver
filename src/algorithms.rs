@@ -1,11 +1,10 @@
-// ==========================================
-// 算法模块 - 整合特征检测、图像预处理、滤波算法
-// ==========================================
+// src/algorithms.rs
 
 use anyhow::{Context, Result};
 use opencv::{
-    core::{self, Mat, Point, Scalar, Size, Vec3b, Vec4b},
-    imgcodecs, imgproc,
+    core::{self, Mat, Point, Point2f, Scalar, Size, Vec3b, Vec4b}, // [修复] 移除了 RotatedRect
+    imgcodecs,
+    imgproc,
     prelude::*,
 };
 
@@ -150,9 +149,6 @@ impl LandmarkSmoother {
     pub fn new(num_landmarks: usize) -> Self {
         let mut filters = Vec::with_capacity(num_landmarks);
         for _ in 0..num_landmarks {
-            // 【优化】参数调优以提高响应速度：
-            // min_cutoff: 0.05（更快的响应，原来0.01太慢）
-            // beta: 200.0（增加beta使其更跟手，原来100.0太稳定）
             filters.push([
                 OneEuroFilter::new(0.05, 200.0),
                 OneEuroFilter::new(0.05, 200.0),
@@ -272,16 +268,15 @@ pub fn letterbox(src: &Mat, target_width: i32, target_height: i32) -> Result<Pre
 }
 
 pub fn auto_correct_exposure(src: &Mat) -> Result<Mat> {
-    // 【优化】用小尺寸图计算亮度，避免处理全分辨率
     let mut small_src = Mat::default();
-    let small_size = Size::new(160, 120); // 【优化】降低采样分辨率从320x240到160x120
+    let small_size = Size::new(160, 120);
     imgproc::resize(
         src,
         &mut small_src,
         small_size,
         0.0,
         0.0,
-        imgproc::INTER_LINEAR, // 【优化】使用更快的插值算法
+        imgproc::INTER_LINEAR,
     )?;
 
     let mut gray = Mat::default();
@@ -300,7 +295,6 @@ pub fn auto_correct_exposure(src: &Mat) -> Result<Mat> {
     let mean_scalar = core::mean(&gray, &core::no_array())?;
     let mean_brightness = mean_scalar[0] as f32;
 
-    // 【优化】放宽亮度范围，减少LUT计算次数
     if mean_brightness > 95.0 && mean_brightness < 165.0 {
         return Ok(src.clone());
     }
@@ -323,16 +317,12 @@ pub fn auto_correct_exposure(src: &Mat) -> Result<Mat> {
     Ok(dst)
 }
 
-/// 加载并转换遮罩图片 (只加载原图 + 转 BGRA，不缩放)
 pub fn load_and_prepare_mask(path: &str) -> Result<Mat> {
-    // 读取原始图片
     let raw_mask = imgcodecs::imread(path, imgcodecs::IMREAD_UNCHANGED)
         .with_context(|| format!("无法加载图片: {}", path))?;
 
-    // 确保格式为 BGRA (4通道)
     let mut final_mask = Mat::default();
     if raw_mask.channels() == 3 {
-        // 如果是 JPG/BMP (3通道)，转 BGRA 并加上全不透明 Alpha
         imgproc::cvt_color(
             &raw_mask,
             &mut final_mask,
@@ -407,5 +397,96 @@ pub fn overlay_image(background: &mut Mat, foreground: &Mat, top_left: Point) ->
             }
         }
     }
+    Ok(())
+}
+
+// ==========================================
+// 几何计算与图片变换算法 (优化版)
+// ==========================================
+
+/// 计算三角形 (p1, p2, p3) 的外接圆半径
+pub fn calculate_circumradius(p1: [f32; 3], p2: [f32; 3], p3: [f32; 3]) -> f32 {
+    let dist = |a: [f32; 3], b: [f32; 3]| -> f32 {
+        ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt()
+    };
+
+    let a = dist(p2, p3);
+    let b = dist(p1, p3);
+    let c = dist(p1, p2);
+
+    let s = (a + b + c) / 2.0;
+    let area = (s * (s - a) * (s - b) * (s - c)).sqrt();
+
+    if area < 1e-5 {
+        return 0.0;
+    }
+
+    (a * b * c) / (4.0 * area)
+}
+
+/// 计算手部旋转角度 (基于 0 -> 9 向量)
+pub fn calculate_hand_angle(wrist: Point, middle_mcp: Point) -> f64 {
+    let dx = middle_mcp.x - wrist.x;
+    let dy = middle_mcp.y - wrist.y;
+    // 计算基础角度
+    (dy as f64).atan2(dx as f64).to_degrees()
+}
+
+/// 旋转并绘制图片 (高画质版)
+/// center: 图片在背景图上的中心坐标
+/// target_size: 图片的目标显示大小 (宽/高)
+/// angle: 旋转角度 (度)
+pub fn draw_rotated_image(
+    bg: &mut Mat,
+    img: &Mat,
+    center: Point,
+    target_size: i32,
+    angle: f64,
+) -> Result<()> {
+    if target_size <= 0 || img.empty() {
+        return Ok(());
+    }
+
+    // 计算包含旋转后图像所需的最小矩形尺寸
+    let diag = (target_size as f32 * std::f32::consts::SQRT_2).ceil() as i32;
+    let canvas_size = diag + 2;
+
+    // 一步到位的变换矩阵 (缩放 + 旋转 + 平移)
+    let src_center = Point2f::new(img.cols() as f32 / 2.0, img.rows() as f32 / 2.0);
+    let scale_factor = target_size as f64 / img.cols() as f64;
+
+    // 获取基础旋转矩阵
+    let mut rot_mat = imgproc::get_rotation_matrix_2d(src_center, angle, scale_factor)?;
+
+    // 调整矩阵的平移部分，使其移动到新画布的中心
+    let new_center_x = canvas_size as f64 / 2.0;
+    let new_center_y = canvas_size as f64 / 2.0;
+
+    // [修复] 使用 at_2d 读取矩阵元素
+    // let tx = rot_mat.at_2d::<f64>(0, 2)?;
+    // let ty = rot_mat.at_2d::<f64>(1, 2)?;
+
+    // [修复] 使用 at_2d_mut 修改矩阵元素
+    *rot_mat.at_2d_mut::<f64>(0, 2)? += new_center_x - src_center.x as f64; // tx + ...
+    *rot_mat.at_2d_mut::<f64>(1, 2)? += new_center_y - src_center.y as f64; // ty + ...
+
+    // 使用 INTER_CUBIC (三次插值) 进行变换
+    let mut rotated_patch = Mat::default();
+    imgproc::warp_affine(
+        img,
+        &mut rotated_patch,
+        &rot_mat,
+        Size::new(canvas_size, canvas_size),
+        imgproc::INTER_CUBIC, // 高质量插值
+        core::BORDER_CONSTANT,
+        Scalar::default(),
+    )?;
+
+    // 计算贴图位置
+    let top_left = Point::new(center.x - canvas_size / 2, center.y - canvas_size / 2);
+
+    // 叠加
+    overlay_image(bg, &rotated_patch, top_left)?;
+
     Ok(())
 }

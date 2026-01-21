@@ -41,7 +41,7 @@ algorithm:
   # 【新增】是否开启视觉识别核心
   # true: 开启摄像头，进行手势和头部追踪
   # false: 关闭摄像头，只保留鼠标跟随的小图标 (纯装饰模式/鼠标高亮模式)
-  enable_recognition: false
+  enable_recognition: true
   hand:
     enabled: true # 【新增】是否启用手部检测 (捏合/旋转手势)
     stability: 0.7
@@ -86,9 +86,19 @@ assets:
   #   设置成 LU (左上) -> 鼠标在图片的左上角 (即图片在鼠标的右下方)
   anchor: "C"
 
+  # 【新增】摄像头手部样式同步
+  # true: 摄像头里的手显示为上面的 cursor_normal/scroll 图片，不显示红点和框
+  # false: 显示原始的红点和绿框
+  sync_hand_style: true
+
+  # 【新增】图片大小缩放比例
+  # 1.0 = 图片刚好填满由手掌(关键点0,1,17)构成的三角形的外接圆的外接正方形
+  # 调大这个值图片变大，调小变小
+  hand_style_scale: 1.7
+
 mouse:
   enabled: true
-  track_mode: "head" # 【新增】可选值: "head" 或 "hand"
+  track_mode: "hand" # 【新增】可选值: "head" 或 "hand"
   # 【开启此选项】
   # true: 只有图片会动，系统鼠标不动（除非点击时）
   # false: 图片跟随系统鼠标
@@ -100,8 +110,8 @@ mouse:
   # 线性灵敏度: 头动 1 像素 = 鼠标动 X 像素
   # 【优化】增加灵敏度以提高跟随速度
   # 如果改为跟踪手模式，建议在跟踪头模式的灵敏度的基础上减去9
-  sensitivity_x: 15.0
-  sensitivity_y: 15.0
+  sensitivity_x: 6.0
+  sensitivity_y: 6.0
 
   # EMA 平滑系数 (0.01 ~ 1.0)
   # 【优化】增加平滑系数的值以减少延迟，但仍保持稳定

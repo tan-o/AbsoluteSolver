@@ -90,6 +90,10 @@ pub struct AssetsConfig {
     // 【新增】配置锚点，默认为居中
     #[serde(default)]
     pub anchor: AnchorPoint,
+    // 【新增】是否让摄像头画面中的手与鼠标图标同步 (显示图片而非骨架)
+    pub sync_hand_style: bool,
+    // 【新增】摄像头中手部图片的缩放比例 (基于0-1-17外接圆)
+    pub hand_style_scale: f32,
 }
 
 #[derive(Debug, Deserialize, Clone, PartialEq)]

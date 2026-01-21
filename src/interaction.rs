@@ -144,7 +144,7 @@ impl HandGestureController {
         }
 
         let (wrist_x, wrist_y) = p(0);
-        let finger_indices = [9, 10, 11, 12];
+        let finger_indices = [0, 9, 10, 11, 12];
         let mut sum_dx = 0.0;
         let mut sum_dy = 0.0;
 
