@@ -55,6 +55,8 @@ struct SolverApp {
     // 【新增】缓存的手部图标
     hand_img_normal: Mat,
     hand_img_scroll: Mat,
+    // 【新增】文本模式图标
+    hand_img_text: Mat,
 }
 
 // 【新增】引入 TrayIconEvent 用于监听左键点击
@@ -310,14 +312,24 @@ impl SolverApp {
 
         // 【新增】预加载手部图片 (复用 assets 配置)
         // 注意：这里我们加载原图，不缩放，缩放在绘制时根据手的大小动态进行
+        // 1. 加载 Normal 图片
         let hand_img_normal = if !config.assets.cursor_normal.is_empty() {
             load_and_prepare_mask(&config.assets.cursor_normal).unwrap_or(Mat::default())
         } else {
             Mat::default()
         };
 
+        // 2. 加载 Scroll 图片
         let hand_img_scroll = if !config.assets.cursor_scroll.is_empty() {
             load_and_prepare_mask(&config.assets.cursor_scroll).unwrap_or(Mat::default())
+        } else {
+            Mat::default()
+        };
+
+        // 【关键修复】你可能漏掉了这段代码，必须在这里定义 hand_img_text 变量
+        // 3. 加载 Text 图片
+        let hand_img_text = if !config.assets.cursor_text.is_empty() {
+            load_and_prepare_mask(&config.assets.cursor_text).unwrap_or(Mat::default())
         } else {
             Mat::default()
         };
@@ -359,6 +371,7 @@ impl SolverApp {
             // shared_coords,
             hand_img_normal, // 初始化字段
             hand_img_scroll, // 初始化字段
+            hand_img_text,   // 赋值
         })
     }
 
@@ -658,11 +671,20 @@ impl SolverApp {
                         // 根据你的反馈，这里先加一个负号。如果发现相差90度，请在 -raw_angle 后 +90 或 -90
                         let final_angle = -raw_angle - 90.0;
 
-                        // 决定使用哪张图
-                        let img_to_draw = match self.gesture_controller.rotation_state {
-                            1 | -1 => &self.hand_img_scroll,
-                            _ => &self.hand_img_normal,
+                        // 1. 优先检查是否处于文本输入模式
+                        let is_text_mode = overlay::is_text_mode_active();
+
+                        let img_to_draw = if is_text_mode {
+                            &self.hand_img_text // 文本模式显示 I 型图标
+                        } else {
+                            // 2. 其次检查手势状态
+                            match self.gesture_controller.rotation_state {
+                                1 | -1 => &self.hand_img_scroll, // 旋转显示滚轮图标
+                                _ => &self.hand_img_normal,      // 默认显示十字图标
+                            }
                         };
+
+                        // =================================================
 
                         // 绘制
                         if base_size > 0 {

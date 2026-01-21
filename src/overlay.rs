@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::config::AnchorPoint; // 引入锚点枚举
+use crate::config::AnchorPoint;
 use crate::interaction::SharedCursorCoords;
 
 use windows::core::w;
@@ -99,8 +99,7 @@ pub fn spawn_mouse_overlay(
             let instance = HINSTANCE(GetModuleHandleW(None).unwrap().0);
             let class_name = w!("RustMouseOverlay");
 
-            let system_ibeam_cursor =
-                LoadCursorW(None, IDC_IBEAM).unwrap_or(HCURSOR(std::ptr::null_mut()));
+            // [删除] 此处移除了 system_ibeam_cursor 的加载，因为已封装在 is_text_mode_active 中
 
             let wnd_class = WNDCLASSW {
                 lpfnWndProc: Some(wnd_proc),
@@ -145,10 +144,7 @@ pub fn spawn_mouse_overlay(
             )
             .unwrap();
 
-            let mut ci = CURSORINFO {
-                cbSize: std::mem::size_of::<CURSORINFO>() as u32,
-                ..Default::default()
-            };
+            // [删除] 此处移除了 ci (CURSORINFO) 的定义，因为已封装
 
             loop {
                 while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
@@ -165,27 +161,8 @@ pub fn spawn_mouse_overlay(
 
                 let _ = ShowWindow(hwnd, SW_SHOWNA);
 
-                let mut is_text_mode = false;
-                if GetCursorInfo(&mut ci).is_ok() {
-                    if !system_ibeam_cursor.0.is_null() && ci.hCursor == system_ibeam_cursor {
-                        is_text_mode = true;
-                    }
-                }
-                if !is_text_mode {
-                    let foreground = GetForegroundWindow();
-                    if !foreground.0.is_null() {
-                        let thread_id = GetWindowThreadProcessId(foreground, None);
-                        let mut gui_info = GUITHREADINFO {
-                            cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,
-                            ..Default::default()
-                        };
-                        if GetGUIThreadInfo(thread_id, &mut gui_info).is_ok() {
-                            if (gui_info.flags & GUI_CARETBLINKING).0 != 0 {
-                                is_text_mode = true;
-                            }
-                        }
-                    }
-                }
+                // [修改] 直接调用封装好的函数
+                let is_text_mode = is_text_mode_active();
 
                 let current_src_img;
                 let should_rotate;
@@ -274,7 +251,7 @@ pub fn spawn_mouse_overlay(
                 }
 
                 // ==========================================
-                // 决定窗口位置 (加入 Anchor 逻辑)
+                // 决定窗口位置 (Anchor 逻辑)
                 // ==========================================
                 let (mouse_x, mouse_y) = if is_virtual_mode {
                     let vx = shared_coords.x.load(Ordering::Relaxed);
@@ -286,8 +263,6 @@ pub fn spawn_mouse_overlay(
                     (p.x, p.y)
                 };
 
-                // 计算偏移量
-                // win_size 是正方形窗口边长
                 let offset_x;
                 let offset_y;
 
@@ -330,7 +305,6 @@ pub fn spawn_mouse_overlay(
                     }
                 }
 
-                // 最终窗口坐标 = 鼠标坐标 - 偏移量
                 let final_win_x = mouse_x - offset_x;
                 let final_win_y = mouse_y - offset_y;
 
@@ -433,4 +407,44 @@ unsafe fn update_layered_window_raw(hwnd: HWND, data: &[u8], w: i32, h: i32) {
     let _ = DeleteObject(hbitmap.into());
     let _ = DeleteDC(mem_dc);
     let _ = ReleaseDC(None, screen_dc);
+}
+
+// ------------------------------------------------------------------
+// 公开函数：检测当前系统是否处于文本编辑模式
+// ------------------------------------------------------------------
+pub fn is_text_mode_active() -> bool {
+    unsafe {
+        // 1. 检查光标形状是否为 IBeam (工字型)
+        let mut ci = CURSORINFO {
+            cbSize: std::mem::size_of::<CURSORINFO>() as u32,
+            ..Default::default()
+        };
+
+        // 获取系统 IBeam 光标的句柄用于比对
+        let system_ibeam = LoadCursorW(None, IDC_IBEAM).unwrap_or(HCURSOR(std::ptr::null_mut()));
+
+        if GetCursorInfo(&mut ci).is_ok() {
+            // flags == 1 代表光标正在显示 (CURSOR_SHOWING)
+            if ci.flags.0 == 1 && !system_ibeam.0.is_null() && ci.hCursor == system_ibeam {
+                return true;
+            }
+        }
+
+        // 2. 检查是否有闪烁的输入光标 (Caret)
+        // 这通常用于检测那些自定义绘制光标的编辑器 (如 Word, VSCode)
+        let foreground = GetForegroundWindow();
+        if !foreground.0.is_null() {
+            let thread_id = GetWindowThreadProcessId(foreground, None);
+            let mut gui_info = GUITHREADINFO {
+                cbSize: std::mem::size_of::<GUITHREADINFO>() as u32,
+                ..Default::default()
+            };
+            if GetGUIThreadInfo(thread_id, &mut gui_info).is_ok() {
+                if (gui_info.flags & GUI_CARETBLINKING).0 != 0 {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
