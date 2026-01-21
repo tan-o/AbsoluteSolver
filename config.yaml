@@ -38,6 +38,10 @@ performance:
   idle_fps: 2 # 没人时的帧率 (建议 1 ~ 10，越低越省电)
 
 algorithm:
+  # 【新增】是否开启视觉识别核心
+  # true: 开启摄像头，进行手势和头部追踪
+  # false: 关闭摄像头，只保留鼠标跟随的小图标 (纯装饰模式/鼠标高亮模式)
+  enable_recognition: false
   hand:
     enabled: true # 【新增】是否启用手部检测 (捏合/旋转手势)
     stability: 0.7

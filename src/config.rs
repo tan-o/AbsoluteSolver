@@ -39,6 +39,7 @@ pub struct PerformanceConfig {
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct AlgorithmConfigs {
+    pub enable_recognition: bool,
     pub hand: AlgorithmParams,
     pub face: AlgorithmParams,
 }

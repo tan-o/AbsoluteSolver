@@ -50,13 +50,213 @@ struct SolverApp {
     // shared_coords: Arc<SharedCursorCoords>,
 }
 
+// 【新增】引入 TrayIconEvent 用于监听左键点击
+use tray_icon::{
+    menu::{Menu, MenuEvent, MenuItem},
+    Icon,
+    MouseButton, // 识别鼠标按键类型
+    TrayIconBuilder,
+    TrayIconEvent,
+};
+
+// 【新增】引入 Windows 消息处理所需的底层 API
+use windows::Win32::UI::WindowsAndMessaging::{
+    DispatchMessageW, PeekMessageW, TranslateMessage, MSG, PM_REMOVE,
+};
+
+// ...
+
+// 辅助函数：利用 OpenCV 读取图片并转换为托盘图标需要的格式
+fn load_tray_icon(path: &str) -> Result<Icon> {
+    // 1. 读取图片
+    let mat = opencv::imgcodecs::imread(path, opencv::imgcodecs::IMREAD_UNCHANGED)?;
+
+    // 2. 调整大小 (托盘图标一般 32x32 或 64x64)
+    let mut resized = Mat::default();
+    opencv::imgproc::resize(
+        &mat,
+        &mut resized,
+        opencv::core::Size::new(64, 64),
+        0.0,
+        0.0,
+        opencv::imgproc::INTER_AREA,
+    )?;
+
+    // 3. 转换颜色空间 BGR/BGRA -> RGBA
+    let mut rgba = Mat::default();
+    if resized.channels() == 3 {
+        opencv::imgproc::cvt_color(
+            &resized,
+            &mut rgba,
+            opencv::imgproc::COLOR_BGR2RGBA,
+            0,
+            opencv::core::AlgorithmHint::ALGO_HINT_DEFAULT,
+        )?;
+    } else if resized.channels() == 4 {
+        opencv::imgproc::cvt_color(
+            &resized,
+            &mut rgba,
+            opencv::imgproc::COLOR_BGRA2RGBA,
+            0,
+            opencv::core::AlgorithmHint::ALGO_HINT_DEFAULT,
+        )?;
+    } else {
+        // 默认创建一个红色的方块图标防止报错
+        let width = 64;
+        let height = 64;
+        let icon_rgba = vec![255u8; (width * height * 4) as usize];
+        return Icon::from_rgba(icon_rgba, width, height).context("无法创建默认图标");
+    }
+
+    // 4. 提取数据
+    let width = rgba.cols() as u32;
+    let height = rgba.rows() as u32;
+    let data_bytes = rgba.data_bytes()?;
+
+    // 必须 clone 数据，因为 opencv 的 mat 数据生命周期问题
+    let icon_data = data_bytes.to_vec();
+
+    Icon::from_rgba(icon_data, width, height).context("无法构建托盘图标")
+}
+
+// -------------------------------------------------------------
+// 【修改后】轻量级模式：带消息循环的托盘图标
+// -------------------------------------------------------------
+fn run_overlay_mode(config: Config) -> Result<()> {
+    println!(">> [Mode] 纯 Overlay 模式已启动 (视觉识别已禁用)");
+    println!(">> [Info] 交互说明:");
+    println!("   - 左键单击图标: 显示/隐藏 Overlay");
+    println!("   - 右键单击图标: 打开菜单 (退出)");
+
+    let shared_coords = Arc::new(SharedCursorCoords::new(0, 0));
+
+    let initial_state = if config.assets.enable_overlay {
+        overlay::STATE_NORMAL
+    } else {
+        overlay::STATE_HIDDEN
+    };
+    let mouse_state = Arc::new(AtomicI32::new(initial_state));
+
+    // =========================================================
+    // 1. 初始化系统托盘菜单
+    // =========================================================
+    let tray_menu = Menu::new();
+    let quit_item = MenuItem::new("Exit", true, None);
+    // 右键菜单只保留退出，因为左键已经可以控制显隐了，这样更简洁
+    tray_menu.append(&quit_item).unwrap();
+
+    let icon = load_tray_icon(&config.assets.cursor_normal)
+        .or_else(|_| load_tray_icon("pictures/icon.png"))
+        .unwrap_or_else(|_| {
+            let w = 64;
+            let h = 64;
+            let raw = vec![255u8; (w * h * 4) as usize];
+            Icon::from_rgba(raw, w, h).unwrap()
+        });
+
+    // 构建托盘图标
+    // 注意：with_menu 默认绑定的是【右键】
+    let _tray_icon = TrayIconBuilder::new()
+        .with_menu(Box::new(tray_menu))
+        .with_tooltip("Absolute Solver")
+        .with_icon(icon)
+        .build()
+        .context("无法创建系统托盘图标")?;
+
+    // =========================================================
+    // 2. 启动 Overlay 线程
+    // =========================================================
+    if config.assets.enable_overlay && !config.assets.cursor_normal.is_empty() {
+        overlay::spawn_mouse_overlay(
+            &config.assets,
+            mouse_state.clone(),
+            shared_coords.clone(),
+            false,
+        )?;
+    }
+
+    let mut input_manager = InputManager::new(&config.shortcuts)?;
+
+    // =========================================================
+    // 3. 主循环 (加入 Windows 消息泵)
+    // =========================================================
+    loop {
+        // [关键修复] 显式处理 Windows 消息
+        // 如果没有这段代码，右键菜单就不会弹出，因为系统消息被阻塞了
+        unsafe {
+            let mut msg = MSG::default();
+            // PM_REMOVE: 读取并从队列中移除消息
+            while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
+
+        // A. 检查托盘菜单点击事件 (右键菜单里的选项)
+        if let Ok(event) = MenuEvent::receiver().try_recv() {
+            if event.id == quit_item.id() {
+                println!(">> [Exit] 正在退出...");
+                break;
+            }
+        }
+
+        // B. 检查托盘图标本身的点击事件 (左键/双击)
+        if let Ok(event) = TrayIconEvent::receiver().try_recv() {
+            match event {
+                // 左键点击 -> 切换显隐
+                TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    ..
+                } => {
+                    let current = mouse_state.load(Ordering::Relaxed);
+                    if current == overlay::STATE_HIDDEN {
+                        mouse_state.store(overlay::STATE_NORMAL, Ordering::Relaxed);
+                        println!(">> [Tray] 显示 Overlay");
+                    } else {
+                        mouse_state.store(overlay::STATE_HIDDEN, Ordering::Relaxed);
+                        println!(">> [Tray] 隐藏 Overlay");
+                    }
+                }
+                // 双击 -> 这里可以加别的逻辑，比如重置位置
+                TrayIconEvent::DoubleClick {
+                    button: MouseButton::Left,
+                    ..
+                } => {
+                    println!(">> [Tray] 双击 (保留功能)");
+                }
+                _ => {}
+            }
+        }
+
+        // C. 检查键盘快捷键
+        match input_manager.check_action() {
+            AppAction::ToggleMouse => {
+                let current = mouse_state.load(Ordering::Relaxed);
+                if current == overlay::STATE_HIDDEN {
+                    mouse_state.store(overlay::STATE_NORMAL, Ordering::Relaxed);
+                } else {
+                    mouse_state.store(overlay::STATE_HIDDEN, Ordering::Relaxed);
+                }
+            }
+            // 可以在这里添加 AppAction::Quit 的处理
+            _ => {}
+        }
+
+        // 适当休眠，避免死循环占用 100% CPU
+        // 50ms 对于 UI 响应来说足够流畅
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    Ok(())
+}
+
 impl SolverApp {
-    fn new(config_path: &str) -> Result<Self> {
+    fn new(config: Config) -> Result<Self> {
         // ========================================================
         // 动态调试窗口配置
         // ========================================================
-        let file = File::open(config_path).context("无法打开配置文件")?;
-        let config: Config = serde_yaml::from_reader(file).context("配置格式错误")?;
+        // let file = File::open(config_path).context("无法打开配置文件")?;
+        // let config: Config = serde_yaml::from_reader(file).context("配置格式错误")?;
 
         if config.debug.show_debug_window {
             #[cfg(target_os = "windows")]
@@ -68,7 +268,7 @@ impl SolverApp {
                 println!(">> [Debug] 调试窗口已开启");
             }
         }
-        println!(">> [Init] 系统初始化中...");
+        println!(">> [Init] 系统初始化中 (识别模式)...");
 
         Self::setup_window(&config)?;
 
@@ -624,9 +824,30 @@ impl SolverApp {
 }
 
 fn main() -> Result<()> {
-    // 捕获 Panic 并暂停，防止闪退
+    // 1. 在最外层先加载配置
+    let file = File::open("config.yaml").context("无法打开配置文件")?;
+    let config: Config = serde_yaml::from_reader(file).context("配置格式错误")?;
+
+    // 2. 根据配置决定进入哪种模式
+    if !config.algorithm.enable_recognition {
+        // === 分支 A: 纯 Overlay 模式 ===
+        // 捕获 Panic 防止闪退
+        let result = (|| -> Result<()> {
+            run_overlay_mode(config)?;
+            Ok(())
+        })();
+
+        if let Err(ref e) = result {
+            eprintln!("\n>> [Error] Overlay 模式运行出错: {:?}", e);
+            let _ = std::io::stdin().read_line(&mut String::new());
+        }
+        return result;
+    }
+
+    // === 分支 B: 完整识别模式 ===
     let result = (|| -> Result<()> {
-        let mut app = SolverApp::new("config.yaml")?;
+        // 注意：这里调用的是修改后的 new(config)
+        let mut app = SolverApp::new(config)?;
         app.run()?;
         Ok(())
     })();
