@@ -168,32 +168,37 @@ pub fn spawn_mouse_overlay(
                 let should_rotate;
                 let mut current_speed = base_speed;
 
-                if is_text_mode {
-                    current_src_img = &img_text;
+                // ========================================================
+                // 【逻辑修改】优先级调整：滚动 > 文本 > 其他
+                // ========================================================
+
+                // 1. 优先判断滚动状态 (无论是否在文本模式，只要滚动就显示滚动图标)
+                if app_state == STATE_SCROLL_CW {
+                    current_src_img = &img_scroll;
                     should_rotate = true;
-                } else {
-                    match app_state {
-                        STATE_SCROLL_CW => {
-                            current_src_img = &img_scroll;
-                            should_rotate = true;
-                            current_speed = base_speed;
-                        }
-                        STATE_SCROLL_CCW => {
-                            current_src_img = &img_scroll;
-                            should_rotate = true;
-                            current_speed = -base_speed;
-                        }
-                        STATE_CLICK_HOLD => {
-                            current_src_img = &img_normal;
-                            should_rotate = false;
-                        }
-                        _ => {
-                            current_src_img = &img_normal;
-                            should_rotate = true;
-                            current_speed = base_speed;
-                        }
-                    }
+                    current_speed = base_speed;
+                } else if app_state == STATE_SCROLL_CCW {
+                    current_src_img = &img_scroll;
+                    should_rotate = true;
+                    current_speed = -base_speed;
                 }
+                // 2. 其次判断文本模式
+                else if is_text_mode {
+                    current_src_img = &img_text;
+                    should_rotate = true; // 文本图标通常不旋转，或者你可以设为 false
+                    current_speed = base_speed;
+                }
+                // 3. 最后是普通状态 (点击/闲置)
+                else if app_state == STATE_CLICK_HOLD {
+                    current_src_img = &img_normal;
+                    should_rotate = false; // 按住时不旋转
+                } else {
+                    current_src_img = &img_normal;
+                    should_rotate = true;
+                    current_speed = base_speed;
+                }
+
+                // ========================================================
 
                 canvas.set_to(&Scalar::all(0.0), &Mat::default()).unwrap();
 

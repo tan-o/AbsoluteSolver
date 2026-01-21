@@ -674,14 +674,18 @@ impl SolverApp {
                         // 1. 优先检查是否处于文本输入模式
                         let is_text_mode = overlay::is_text_mode_active();
 
-                        let img_to_draw = if is_text_mode {
-                            &self.hand_img_text // 文本模式显示 I 型图标
+                        // 获取当前手势旋转状态
+                        let rotation_state = self.gesture_controller.rotation_state;
+
+                        let img_to_draw = if rotation_state == 1 || rotation_state == -1 {
+                            // 1. 优先级最高：如果正在滚动，强制显示滚动图标
+                            &self.hand_img_scroll
+                        } else if is_text_mode {
+                            // 2. 优先级次之：如果没有滚动，且处于文本模式，显示文本图标
+                            &self.hand_img_text
                         } else {
-                            // 2. 其次检查手势状态
-                            match self.gesture_controller.rotation_state {
-                                1 | -1 => &self.hand_img_scroll, // 旋转显示滚轮图标
-                                _ => &self.hand_img_normal,      // 默认显示十字图标
-                            }
+                            // 3. 默认：显示普通图标
+                            &self.hand_img_normal
                         };
 
                         // =================================================
