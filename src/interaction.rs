@@ -378,8 +378,10 @@ impl HeadMouseController {
         let target_y = (self.screen_height / 2.0) + dy * self.config.sensitivity_y as f64;
 
         let ema_alpha = self.config.smoothing.clamp(0.01, 1.0) as f64;
-        self.filtered_pos.x = self.filtered_pos.x * (1.0 - ema_alpha) + target_x * ema_alpha;
-        self.filtered_pos.y = self.filtered_pos.y * (1.0 - ema_alpha) + target_y * ema_alpha;
+        // 【优化】预计算 (1.0 - ema_alpha) 避免重复计算
+        let ema_beta = 1.0 - ema_alpha;
+        self.filtered_pos.x = self.filtered_pos.x * ema_beta + target_x * ema_alpha;
+        self.filtered_pos.y = self.filtered_pos.y * ema_beta + target_y * ema_alpha;
 
         let interp = 0.4;
         self.cursor_pos.x += (self.filtered_pos.x - self.cursor_pos.x) * interp;
