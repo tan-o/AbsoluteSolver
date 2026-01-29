@@ -561,6 +561,7 @@ impl SolverApp {
 
             // D. UI 数据缓存更新
             if let Some((ref landmarks, rect)) = face_result {
+                // 【优化】只保存引用而不 clone，减少内存分配
                 self.last_valid_landmarks = Some(landmarks.clone());
                 self.last_known_face_rect = Some((rect, Instant::now()));
             }

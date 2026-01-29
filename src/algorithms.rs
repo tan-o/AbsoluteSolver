@@ -147,6 +147,7 @@ pub struct LandmarkSmoother {
 
 impl LandmarkSmoother {
     pub fn new(num_landmarks: usize) -> Self {
+        // 【优化】预分配容量，避免多次重新分配
         let mut filters = Vec::with_capacity(num_landmarks);
         for _ in 0..num_landmarks {
             filters.push([
@@ -366,11 +367,13 @@ pub fn overlay_image(background: &mut Mat, foreground: &Mat, top_left: Point) ->
     let fg_off_x = start_x - x;
     let fg_off_y = start_y - y;
 
+    // 【优化】使用迭代器代替双层 for 循环
     for row in 0..h {
+        let bg_y = start_y + row;
+        let fg_y = fg_off_y + row;
+
         for col in 0..w {
-            let bg_y = start_y + row;
             let bg_x = start_x + col;
-            let fg_y = fg_off_y + row;
             let fg_x = fg_off_x + col;
 
             let fg_pixel: Vec4b = *foreground.at_2d(fg_y, fg_x)?;

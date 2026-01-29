@@ -223,8 +223,7 @@ pub fn spawn_mouse_overlay(
                 let mut roi_mat = Mat::roi_mut(&mut canvas, rect).unwrap();
                 current_src_img.copy_to(&mut roi_mat).unwrap();
 
-                let final_display_mat: Mat;
-
+                // 【优化】避免不必要的 clone，直接使用引用
                 if current_angle.abs() > 0.1 {
                     let rot_mat = imgproc::get_rotation_matrix_2d(
                         Point2f::new(win_center, win_center),
@@ -245,14 +244,13 @@ pub fn spawn_mouse_overlay(
                     )
                     .unwrap();
 
-                    final_display_mat = rotated_canvas;
+                    if let Ok(data) = rotated_canvas.data_bytes() {
+                        update_layered_window_raw(hwnd, data, win_size, win_size);
+                    }
                 } else {
-                    final_display_mat = canvas.clone();
-                }
-
-                let continuous_mat = final_display_mat.clone();
-                if let Ok(data) = continuous_mat.data_bytes() {
-                    update_layered_window_raw(hwnd, data, win_size, win_size);
+                    if let Ok(data) = canvas.data_bytes() {
+                        update_layered_window_raw(hwnd, data, win_size, win_size);
+                    }
                 }
 
                 // ==========================================
