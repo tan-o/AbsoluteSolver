@@ -371,6 +371,9 @@ pub fn overlay_image(background: &mut Mat, foreground: &Mat, top_left: Point) ->
     let fg_off_x = start_x - x;
     let fg_off_y = start_y - y;
 
+    // 【优化】提前计算除法常数
+    let inv_255 = 1.0 / 255.0;
+
     // 【优化】使用迭代器代替双层 for 循环
     for row in 0..h {
         let bg_y = start_y + row;
@@ -381,7 +384,7 @@ pub fn overlay_image(background: &mut Mat, foreground: &Mat, top_left: Point) ->
             let fg_x = fg_off_x + col;
 
             let fg_pixel: Vec4b = *foreground.at_2d(fg_y, fg_x)?;
-            let alpha = fg_pixel[3] as f32 / 255.0;
+            let alpha = fg_pixel[3] as f32 * inv_255;
 
             if alpha < 0.01 {
                 continue;
