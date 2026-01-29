@@ -277,6 +277,10 @@ impl HandPipeline {
         let mut boxes = Vec::new();
 
         // 这里的循环可以用迭代器简化，但性能差异微乎其微
+        // 【优化】预计算倒数，避免重复的浮点除法
+        let scale_inv = 1.0 / pre_res.scale;
+        let half = 0.5;
+
         for i in 0..num_anchors {
             let score = output_view[[0, 4, i]];
             if score > 0.4 {
@@ -285,17 +289,20 @@ impl HandPipeline {
                 let w = output_view[[0, 2, i]];
                 let h = output_view[[0, 3, i]];
 
-                // Coordinate Mapping
-                let cx_global = (cx - pre_res.pad_x as f32) / pre_res.scale;
-                let cy_global = (cy - pre_res.pad_y as f32) / pre_res.scale;
-                let w_global = w / pre_res.scale;
-                let h_global = h / pre_res.scale;
+                // Coordinate Mapping 【优化】用乘法代替除法
+                let cx_global = (cx - pre_res.pad_x as f32) * scale_inv;
+                let cy_global = (cy - pre_res.pad_y as f32) * scale_inv;
+                let w_global = w * scale_inv;
+                let h_global = h * scale_inv;
+
+                let half_w = w_global * half;
+                let half_h = h_global * half;
 
                 boxes.push(DetectionBox {
-                    x1: cx_global - w_global / 2.0,
-                    y1: cy_global - h_global / 2.0,
-                    x2: cx_global + w_global / 2.0,
-                    y2: cy_global + h_global / 2.0,
+                    x1: cx_global - half_w,
+                    y1: cy_global - half_h,
+                    x2: cx_global + half_w,
+                    y2: cy_global + half_h,
                     score,
                 });
             }
@@ -397,14 +404,23 @@ impl HandPipeline {
             .1;
 
         let mut landmarks = Vec::with_capacity(21);
+
+        // 【优化】预计算倒数，避免重复除法
+        let lm_size_inv = 1.0 / self.landmark_input_size as f32;
+        let roi_w = roi_rect.width as f32;
+        let roi_h = roi_rect.height as f32;
+        let roi_x = roi_rect.x as f32;
+        let roi_y = roi_rect.y as f32;
+
         for i in 0..21 {
-            let lx = lm_data[i * 3];
-            let ly = lm_data[i * 3 + 1];
-            let lz = lm_data[i * 3 + 2];
-            let gx =
-                roi_rect.x as f32 + (lx / self.landmark_input_size as f32) * roi_rect.width as f32;
-            let gy =
-                roi_rect.y as f32 + (ly / self.landmark_input_size as f32) * roi_rect.height as f32;
+            let idx = i * 3;
+            let lx = lm_data[idx];
+            let ly = lm_data[idx + 1];
+            let lz = lm_data[idx + 2];
+
+            // 【优化】用乘法代替除法
+            let gx = roi_x + lx * lm_size_inv * roi_w;
+            let gy = roi_y + ly * lm_size_inv * roi_h;
             landmarks.push([gx, gy, lz]);
         }
 
@@ -588,19 +604,24 @@ impl FacePipeline {
             h_norm = raw_coords[3].clamp(-5.0, 5.0).exp() * anchor.h;
         }
 
+        // 【优化】预计算倒数，避免重复除法
+        let scale_inv = 1.0 / pre_res.scale;
+        let input_size_f32 = input_size as f32;
+
         // Global coords
-        let cx_global = (cx_norm * input_size as f32 - pre_res.pad_x as f32) / pre_res.scale;
-        let cy_global = (cy_norm * input_size as f32 - pre_res.pad_y as f32) / pre_res.scale;
-        let w_global = (w_norm * input_size as f32) / pre_res.scale;
-        let h_global = (h_norm * input_size as f32) / pre_res.scale;
+        let cx_global = (cx_norm * input_size_f32 - pre_res.pad_x as f32) * scale_inv;
+        let cy_global = (cy_norm * input_size_f32 - pre_res.pad_y as f32) * scale_inv;
+        let w_global = (w_norm * input_size_f32) * scale_inv;
+        let h_global = (h_norm * input_size_f32) * scale_inv;
 
         let scale_roi = 1.5;
         let box_size = w_global.max(h_global) * scale_roi;
+        let box_size_half = box_size * 0.5;
 
         let img_w = full_frame.cols() as f32;
         let img_h = full_frame.rows() as f32;
 
-        let x1 = (cx_global - box_size / 2.0) as i32;
+        let x1 = (cx_global - box_size_half) as i32;
         let y1 = (cy_global - box_size / 2.0) as i32;
         let roi_s = box_size as i32;
 
@@ -664,12 +685,20 @@ impl FacePipeline {
             .1;
 
         let mut landmarks = Vec::with_capacity(468);
+
+        // 【优化】预计算常数，避免重复计算
+        let roi_x = roi_rect.x as f32;
+        let roi_y = roi_rect.y as f32;
+        let roi_w = roi_rect.width as f32;
+        let roi_h = roi_rect.height as f32;
+
         for i in 0..468 {
-            let lx = lm_data[i * 3];
-            let ly = lm_data[i * 3 + 1];
-            let lz = lm_data[i * 3 + 2];
-            let gx = roi_rect.x as f32 + lx * roi_rect.width as f32;
-            let gy = roi_rect.y as f32 + ly * roi_rect.height as f32;
+            let idx = i * 3;
+            let lx = lm_data[idx];
+            let ly = lm_data[idx + 1];
+            let lz = lm_data[idx + 2];
+            let gx = roi_x + lx * roi_w;
+            let gy = roi_y + ly * roi_h;
             landmarks.push([gx, gy, lz]);
         }
 

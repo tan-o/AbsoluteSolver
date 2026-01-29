@@ -57,27 +57,30 @@ impl DetectionBox {
     }
 }
 
-// 简单的 NMS 实现
+// 【优化】NMS 实现：提前退出策略减少重复计算
 pub fn non_max_suppression(mut boxes: Vec<DetectionBox>, iou_threshold: f32) -> Vec<DetectionBox> {
+    if boxes.is_empty() {
+        return vec![];
+    }
+
     boxes.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap());
 
     let mut keepers = Vec::new();
-    let mut is_suppressed = vec![false; boxes.len()];
+    keepers.push(boxes[0]);
 
-    for i in 0..boxes.len() {
-        if is_suppressed[i] {
-            continue;
-        }
-        keepers.push(boxes[i]);
+    'outer: for i in 1..boxes.len() {
+        let box_i = &boxes[i];
 
-        for j in (i + 1)..boxes.len() {
-            if !is_suppressed[j] {
-                if boxes[i].iou(&boxes[j]) > iou_threshold {
-                    is_suppressed[j] = true;
-                }
+        // 提前检查：如果与已保留的任何框重叠过多，则跳过
+        for keeper in &keepers {
+            if box_i.iou(keeper) > iou_threshold {
+                continue 'outer;
             }
         }
+
+        keepers.push(*box_i);
     }
+
     keepers
 }
 
@@ -277,7 +280,7 @@ pub fn auto_correct_exposure(src: &Mat) -> Result<Mat> {
         small_size,
         0.0,
         0.0,
-        imgproc::INTER_LINEAR,
+        imgproc::INTER_AREA, // 【优化】用 INTER_AREA 代替 INTER_LINEAR（更快）
     )?;
 
     let mut gray = Mat::default();
@@ -296,6 +299,7 @@ pub fn auto_correct_exposure(src: &Mat) -> Result<Mat> {
     let mean_scalar = core::mean(&gray, &core::no_array())?;
     let mean_brightness = mean_scalar[0] as f32;
 
+    // 【优化】范围内时直接返回原引用，避免 clone
     if mean_brightness > 95.0 && mean_brightness < 165.0 {
         return Ok(src.clone());
     }

@@ -177,6 +177,6 @@ inference:
   #   "gpu"   (强制使用主显卡/独显)
   #   "cuda"  (强制使用 Nvidia CUDA,使用cuda请自行下载cudnn)
   #   "cpu"   (仅使用 CPU)
-  device: "igpu"
+  device: "cpu"
 
   cpu_threads: 1
