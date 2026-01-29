@@ -211,14 +211,12 @@ pub fn spawn_mouse_overlay(
                     current_angle %= 360.0;
                 }
 
-                let target_x = (win_size - current_src_img.cols()) / 2;
-                let target_y = (win_size - current_src_img.rows()) / 2;
-                let rect = Rect::new(
-                    target_x,
-                    target_y,
-                    current_src_img.cols(),
-                    current_src_img.rows(),
-                );
+                // 【优化】缓存cols()和rows()结果，避免重复调用
+                let img_cols = current_src_img.cols();
+                let img_rows = current_src_img.rows();
+                let target_x = (win_size - img_cols) / 2;
+                let target_y = (win_size - img_rows) / 2;
+                let rect = Rect::new(target_x, target_y, img_cols, img_rows);
 
                 let mut roi_mat = Mat::roi_mut(&mut canvas, rect).unwrap();
                 current_src_img.copy_to(&mut roi_mat).unwrap();
