@@ -193,8 +193,13 @@ pub struct HandPipeline {
     yolo_input_height: i32,
     landmark_input_size: i32,
     avg_score: f32,
+    // 【注】stability仅在构造函数中使用，计算alpha系数，保留以防后续配置更新
+    #[allow(dead_code)]
     stability: f32,
     threshold: f32,
+    // 【优化】预计算平滑系数，避免每帧重复计算
+    alpha_fall: f32,
+    alpha_rise: f32,
     smoother: LandmarkSmoother,
     pub device_name: String,
 }
@@ -207,6 +212,8 @@ impl HandPipeline {
         let (detector_sess, dev_name) = create_session(detector_path, infer_config)?;
         let (landmark_sess, _) = create_session(landmark_path, infer_config)?;
 
+        let stability = algo_config.stability.clamp(0.0, 1.0);
+
         Ok(Self {
             detector_sess,
             landmark_sess,
@@ -214,8 +221,11 @@ impl HandPipeline {
             yolo_input_height: 480,
             landmark_input_size: 224,
             avg_score: 0.0,
-            stability: algo_config.stability.clamp(0.0, 1.0),
+            stability,
             threshold: algo_config.threshold.clamp(0.0, 1.0),
+            // 【优化】初始化时预计算平滑系数
+            alpha_fall: 1.0 - (0.95 * stability),
+            alpha_rise: 1.0 - (0.8 * stability),
             smoother: LandmarkSmoother::new(21),
             device_name: dev_name,
         })
@@ -316,12 +326,13 @@ impl HandPipeline {
 
         // Score Smoothing
         let best_box = best_boxes[0];
-        let alpha_fall = 1.0 - (0.95 * self.stability);
-        let alpha_rise = 1.0 - (0.8 * self.stability);
+        // 【优化】使用预计算的系数，避免每帧计算
         if best_box.score > self.avg_score {
-            self.avg_score = self.avg_score * (1.0 - alpha_rise) + best_box.score * alpha_rise;
+            self.avg_score =
+                self.avg_score * (1.0 - self.alpha_rise) + best_box.score * self.alpha_rise;
         } else {
-            self.avg_score = self.avg_score * (1.0 - alpha_fall) + best_box.score * alpha_fall;
+            self.avg_score =
+                self.avg_score * (1.0 - self.alpha_fall) + best_box.score * self.alpha_fall;
         }
 
         if self.avg_score < self.threshold {
@@ -437,8 +448,13 @@ pub struct FacePipeline {
     detector_input_size: i32,
     landmark_input_size: i32,
     avg_score: f32,
+    // 【注】stability仅在构造函数中使用，计算alpha系数，保留以防后续配置更新
+    #[allow(dead_code)]
     stability: f32,
     threshold: f32,
+    // 【优化】预计算平滑系数
+    alpha_fall: f32,
+    alpha_rise: f32,
     anchors: Vec<Anchor>,
     smoother: LandmarkSmoother,
 }
@@ -453,6 +469,7 @@ impl FacePipeline {
 
         let detector_input_size = 256;
         let anchors = generate_face_anchors(detector_input_size);
+        let stability = algo_config.stability.clamp(0.0, 1.0);
 
         Ok(Self {
             detector_sess,
@@ -460,8 +477,11 @@ impl FacePipeline {
             detector_input_size,
             landmark_input_size: 192,
             avg_score: 0.0,
-            stability: algo_config.stability.clamp(0.0, 1.0),
+            stability,
             threshold: algo_config.threshold.clamp(0.0, 1.0),
+            // 【优化】初始化时预计算平滑系数
+            alpha_fall: 1.0 - (0.95 * stability),
+            alpha_rise: 1.0 - (0.8 * stability),
             anchors,
             smoother: LandmarkSmoother::new(468),
         })
@@ -551,12 +571,13 @@ impl FacePipeline {
         let current_prob = max_score;
 
         // Smoothing
-        let alpha_fall = 1.0 - (0.95 * self.stability);
-        let alpha_rise = 1.0 - (0.8 * self.stability);
+        // 【优化】使用预计算的系数，避免每帧计算
         if current_prob > self.avg_score {
-            self.avg_score = self.avg_score * (1.0 - alpha_rise) + current_prob * alpha_rise;
+            self.avg_score =
+                self.avg_score * (1.0 - self.alpha_rise) + current_prob * self.alpha_rise;
         } else {
-            self.avg_score = self.avg_score * (1.0 - alpha_fall) + current_prob * alpha_fall;
+            self.avg_score =
+                self.avg_score * (1.0 - self.alpha_fall) + current_prob * self.alpha_fall;
         }
 
         if self.avg_score < self.threshold {
