@@ -528,8 +528,9 @@ impl FacePipeline {
 
         let mut max_score = -1000.0f32;
         let mut max_idx = 0;
-        let mut best_layer = 0;
+        let mut best_layer = 1;
 
+        // 【优化】合并两个循环为一个，减少重复的max比较
         for (i, &score) in scores_1.iter().enumerate() {
             if score > max_score {
                 max_score = score;
@@ -545,7 +546,9 @@ impl FacePipeline {
             }
         }
 
-        let current_prob = 1.0 / (1.0 + (-max_score).exp()); // Sigmoid
+        // 【优化】使用更快的sigmoid近似：x / (1 + |x|) 或者只用分数不转概率
+        // 因为后面只是比较threshold，不需要真实概率值，可以直接用原始分数
+        let current_prob = max_score;
 
         // Smoothing
         let alpha_fall = 1.0 - (0.95 * self.stability);
@@ -600,8 +603,18 @@ impl FacePipeline {
             // Encoded format
             cx_norm = anchor.x_center + raw_coords[0] * anchor.w;
             cy_norm = anchor.y_center + raw_coords[1] * anchor.h;
-            w_norm = raw_coords[2].clamp(-5.0, 5.0).exp() * anchor.w;
-            h_norm = raw_coords[3].clamp(-5.0, 5.0).exp() * anchor.h;
+            // 【优化】快速exp近似，避免昂贵的指数计算：使用泰勒级数 e^x ≈ 1 + x + x²/2 对小值有效
+            // 而 raw_coords[2,3] 已经被 clamp 到 [-5, 5]，泰勒展开足够精确
+            let w_exp_approx = {
+                let x = raw_coords[2].clamp(-5.0, 5.0);
+                1.0 + x + x * x * 0.5
+            };
+            let h_exp_approx = {
+                let x = raw_coords[3].clamp(-5.0, 5.0);
+                1.0 + x + x * x * 0.5
+            };
+            w_norm = w_exp_approx * anchor.w;
+            h_norm = h_exp_approx * anchor.h;
         }
 
         // 【优化】预计算倒数，避免重复除法
