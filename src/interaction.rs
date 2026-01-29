@@ -112,8 +112,10 @@ impl HandGestureController {
             sum_y += y;
         }
 
-        let center_x = sum_x / 12.0;
-        let center_y = sum_y / 12.0;
+        // 【优化】用倒数乘法替代除法
+        let inv_12 = 1.0 / 12.0;
+        let center_x = sum_x * inv_12;
+        let center_y = sum_y * inv_12;
 
         let (thumb_x, thumb_y) = p(4);
         let dist_thumb_to_center =
@@ -227,6 +229,7 @@ impl HeadPoseSolver {
         let mut sum_x = 0.0;
         let mut sum_y = 0.0;
         let count = rigid_indices.len() as f64;
+        let inv_count = 1.0 / count;
 
         for &idx in rigid_indices {
             if let Some(p) = landmarks.get(idx) {
@@ -234,7 +237,7 @@ impl HeadPoseSolver {
                 sum_y += p[1] as f64;
             }
         }
-        Some((sum_x / count, sum_y / count))
+        Some((sum_x * inv_count, sum_y * inv_count))
     }
 }
 
