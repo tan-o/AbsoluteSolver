@@ -256,10 +256,12 @@ impl HandPipeline {
 
         // 【说明】这个循环虽然看起来“原始”，但它是 HWC -> CHW 转换最高效的方式
         // 任何基于矩阵的 reshape/transpose 都会涉及额外的内存分配或多次遍历
+        // 【优化】预计算倒数，避免大量像素循环中的除法
+        let inv_255 = 1.0 / 255.0;
         for (i, chunk) in bytes.chunks_exact(3).enumerate() {
-            r_plane[i] = chunk[0] as f32 / 255.0;
-            g_plane[i] = chunk[1] as f32 / 255.0;
-            b_plane[i] = chunk[2] as f32 / 255.0;
+            r_plane[i] = chunk[0] as f32 * inv_255;
+            g_plane[i] = chunk[1] as f32 * inv_255;
+            b_plane[i] = chunk[2] as f32 * inv_255;
         }
 
         let input_tensor =
@@ -394,10 +396,12 @@ impl HandPipeline {
         let (lm_g, lm_b) = lm_rest.split_at_mut(lm_total);
         let lm_bytes = lm_rgb.data_bytes()?;
 
+        // 【优化】预计算倒数
+        let inv_255 = 1.0 / 255.0;
         for (i, chunk) in lm_bytes.chunks_exact(3).enumerate() {
-            lm_r[i] = chunk[0] as f32 / 255.0;
-            lm_g[i] = chunk[1] as f32 / 255.0;
-            lm_b[i] = chunk[2] as f32 / 255.0;
+            lm_r[i] = chunk[0] as f32 * inv_255;
+            lm_g[i] = chunk[1] as f32 * inv_255;
+            lm_b[i] = chunk[2] as f32 * inv_255;
         }
 
         let lm_outputs =
@@ -511,10 +515,12 @@ impl FacePipeline {
         let bytes = rgb_frame.data_bytes()?;
 
         // Normalization: (v - 127.5) / 127.5
+        // 【优化】预计算倒数
+        let inv_127_5 = 1.0 / 127.5;
         for (i, chunk) in bytes.chunks_exact(3).enumerate() {
-            r[i] = (chunk[0] as f32 - 127.5) / 127.5;
-            g[i] = (chunk[1] as f32 - 127.5) / 127.5;
-            b[i] = (chunk[2] as f32 - 127.5) / 127.5;
+            r[i] = (chunk[0] as f32 - 127.5) * inv_127_5;
+            g[i] = (chunk[1] as f32 - 127.5) * inv_127_5;
+            b[i] = (chunk[2] as f32 - 127.5) * inv_127_5;
         }
 
         let input_tensor = Tensor::from_array(Array4::from_shape_vec(
