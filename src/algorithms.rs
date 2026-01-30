@@ -2,9 +2,8 @@
 
 use anyhow::{Context, Result};
 use opencv::{
-    core::{self, Mat, Point, Point2f, Scalar, Size, Vec3b, Vec4b}, // [修复] 移除了 RotatedRect
-    imgcodecs,
-    imgproc,
+    core::{self, Mat, Point, Point2f, Scalar, Size, Vec3b, Vec4b},
+    imgcodecs, imgproc,
     prelude::*,
 };
 
@@ -276,42 +275,44 @@ pub fn letterbox(src: &Mat, target_width: i32, target_height: i32) -> Result<Pre
 }
 
 pub fn auto_correct_exposure(src: &Mat) -> Result<Mat> {
-    let mut small_src = Mat::default();
-    let small_size = Size::new(160, 120);
-    imgproc::resize(
-        src,
-        &mut small_src,
-        small_size,
-        0.0,
-        0.0,
-        imgproc::INTER_AREA, // 【优化】用 INTER_AREA 代替 INTER_LINEAR（更快）
-    )?;
-
     let mut gray = Mat::default();
-    if small_src.channels() == 3 {
+    if src.channels() == 3 {
         imgproc::cvt_color(
-            &small_src,
+            src,
             &mut gray,
             imgproc::COLOR_BGR2GRAY,
             0,
             core::AlgorithmHint::ALGO_HINT_DEFAULT,
         )?;
     } else {
-        small_src.copy_to(&mut gray)?;
+        src.copy_to(&mut gray)?;
     }
 
+    // 计算全局亮度
     let mean_scalar = core::mean(&gray, &core::no_array())?;
     let mean_brightness = mean_scalar[0] as f32;
 
-    // 【优化】范围内时直接返回原引用，避免 clone
-    if mean_brightness > 95.0 && mean_brightness < 165.0 {
+    // 亮度正常就返回原图
+    if mean_brightness > 85.0 && mean_brightness < 160.0 {
         return Ok(src.clone());
     }
 
-    let target_brightness: f32 = 130.0;
-    let safe_mean = mean_brightness.max(1.0);
-    let gamma = ((target_brightness / 255.0).ln() / (safe_mean / 255.0).ln()).clamp(0.4, 3.0);
+    // 【简化】过曝时用激进的gamma压制，让过曝的手/头显示出来
+    // 简单逻辑：过亮就压，不过亮就提
+    let gamma = if mean_brightness > 160.0 {
+        // 过曝：激进压低（gamma > 1）
+        0.5
+    } else {
+        // 欠曝：提升亮度（gamma < 1）
+        1.8
+    };
 
+    apply_gamma_lut(src, &gray, gamma)
+}
+
+/// 【内部函数】应用gamma LUT进行曝光校正
+fn apply_gamma_lut(src: &Mat, gray: &Mat, gamma: f32) -> Result<Mat> {
+    // 构建LUT进行gamma校正
     let mut lut_data = Vec::with_capacity(256);
     for i in 0..256 {
         let normalized = i as f32 / 255.0;
@@ -321,9 +322,23 @@ pub fn auto_correct_exposure(src: &Mat) -> Result<Mat> {
 
     let lut_mat = Mat::from_slice(&lut_data)?;
     let lut_final = lut_mat.reshape(1, 256)?;
-    let mut dst = Mat::default();
-    core::lut(src, &lut_final, &mut dst)?;
-    Ok(dst)
+    let mut adjusted = Mat::default();
+    core::lut(gray, &lut_final, &mut adjusted)?;
+
+    // 【优化】如果源图是彩色，需要转换回彩色
+    if src.channels() == 3 {
+        let mut result = Mat::default();
+        imgproc::cvt_color(
+            &adjusted,
+            &mut result,
+            imgproc::COLOR_GRAY2BGR,
+            0,
+            core::AlgorithmHint::ALGO_HINT_DEFAULT,
+        )?;
+        Ok(result)
+    } else {
+        Ok(adjusted)
+    }
 }
 
 pub fn load_and_prepare_mask(path: &str) -> Result<Mat> {
