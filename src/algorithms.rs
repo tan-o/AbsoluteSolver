@@ -135,11 +135,15 @@ impl OneEuroFilter {
 
     fn smoothing_factor(&self, dt: f32, cutoff: f32) -> f32 {
         let r = 2.0 * std::f32::consts::PI * cutoff * dt;
+        // 【优化】r / (r + 1.0) 等价于 1.0 / (1.0 + 1.0/r)
+        // 但当r很小时数值不稳定，保持原式
         r / (r + 1.0)
     }
 
     fn exponential_smoothing(&self, alpha: f32, x: f32, x_prev: f32) -> f32 {
-        alpha * x + (1.0 - alpha) * x_prev
+        // 【优化】x * alpha + x_prev * (1 - alpha) = x_prev + (x - x_prev) * alpha
+        // 后者减少一次乘法
+        x_prev + (x - x_prev) * alpha
     }
 }
 

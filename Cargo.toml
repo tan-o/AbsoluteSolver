@@ -17,6 +17,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_yaml = "0.9.34-deprecated"
 rdev = "0.5.3"
 tray-icon ="0.21.3"
+rayon="1.11.0"
 
 # 【新增】用于获取屏幕逻辑分辨率
 winit = "0.30.12"
