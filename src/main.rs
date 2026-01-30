@@ -894,13 +894,13 @@ impl SolverApp {
                 fps_timer = Instant::now();
             }
 
-            let frame_duration = Duration::from_millis(
-                1000 / (if active_cooldown > 0 {
-                    active_fps
-                } else {
-                    idle_fps
-                }),
-            );
+            // 【优化】预计算倒数，避免每帧除法
+            let fps_val = if active_cooldown > 0 {
+                active_fps
+            } else {
+                idle_fps
+            };
+            let frame_duration = Duration::from_millis(1000 / fps_val);
             if frame_duration > start_time.elapsed() {
                 std::thread::sleep(frame_duration - start_time.elapsed());
             }

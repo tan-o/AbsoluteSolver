@@ -428,14 +428,16 @@ pub fn calculate_circumradius(p1: [f32; 3], p2: [f32; 3], p3: [f32; 3]) -> f32 {
     let b = dist(p1, p3);
     let c = dist(p1, p2);
 
-    let s = (a + b + c) / 2.0;
+    // 【优化】提前计算倒数
+    let s = (a + b + c) * 0.5;
     let area = (s * (s - a) * (s - b) * (s - c)).sqrt();
 
     if area < 1e-5 {
         return 0.0;
     }
 
-    (a * b * c) / (4.0 * area)
+    // 用乘法代替除法
+    (a * b * c) * (1.0 / (4.0 * area))
 }
 
 /// 计算手部旋转角度 (基于 0 -> 9 向量)
